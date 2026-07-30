@@ -12,6 +12,13 @@ This repo is built and maintained entirely by coding agents.
 trigger specs, and the build order (currently at M1). `docs/DECISIONS.md` is the why.
 Everything else (stack, layout, commands), infer from the code and `package.json`.
 
+**Then check the open issues.** SPEC.md says what a milestone *is*; the GitHub milestone
+of the same name says how far into it we are. Work comes from an issue, one issue per PR.
+Issues are specs — outcome plus the behaviours that prove it — and the template
+(`.github/ISSUE_TEMPLATE/feature.md`) deliberately leaves implementation to you. If what
+you are about to build is not in the issue's "Behaviours", stop: either it belongs to a
+later milestone, or the issue is wrong and should be fixed before the code is.
+
 ## Invariants (violating these is a design failure, not a style issue)
 
 1. Capture requires zero organizational decisions from the user — no tags, categories, or

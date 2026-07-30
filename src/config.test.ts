@@ -3,32 +3,65 @@ import { getDbPath, loadConfig, type Env } from "./config";
 
 const validEnv: Env = {
   LIFEOPS_DB_PATH: "/data/lifeops.db",
-  LLM_API_KEY: "sk-test",
+  LLM_BASE_URL: "http://192.168.1.50:11434/v1",
+  LLM_MODEL: "qwen3:8b",
 };
 
 describe("loadConfig", () => {
   it("fails loudly when a required variable is missing", () => {
-    // A deployment missing its API key must not boot and quietly accept dumps that will
+    // A deployment missing its endpoint must not boot and quietly accept dumps that will
     // never be extracted.
-    expect(() => loadConfig({ LIFEOPS_DB_PATH: "/data/lifeops.db" })).toThrow(
-      /LLM_API_KEY/,
-    );
-    expect(() => loadConfig({ LLM_API_KEY: "sk-test" })).toThrow(
-      /LIFEOPS_DB_PATH/,
-    );
+    for (const missing of [
+      "LIFEOPS_DB_PATH",
+      "LLM_BASE_URL",
+      "LLM_MODEL",
+    ] as const) {
+      const env = { ...validEnv };
+      delete env[missing];
+      expect(() => loadConfig(env)).toThrow(new RegExp(missing));
+    }
   });
 
   it("treats a blank variable as missing", () => {
-    expect(() => loadConfig({ ...validEnv, LLM_API_KEY: "   " })).toThrow(
-      /LLM_API_KEY/,
+    expect(() => loadConfig({ ...validEnv, LLM_MODEL: "   " })).toThrow(
+      /LLM_MODEL/,
     );
+  });
+
+  it("needs no API key, because a local endpoint has no secret", () => {
+    const config = loadConfig(validEnv);
+    expect(config.llm.apiKey).toBeUndefined();
+    expect(config.llm.baseUrl).toBe("http://192.168.1.50:11434/v1");
+    expect(config.llm.model).toBe("qwen3:8b");
+  });
+
+  it("passes an API key through when the endpoint sits behind a proxy", () => {
+    const config = loadConfig({ ...validEnv, LLM_API_KEY: "proxy-token" });
+    expect(config.llm.apiKey).toBe("proxy-token");
+  });
+
+  it("ignores a blank API key rather than sending an empty credential", () => {
+    const config = loadConfig({ ...validEnv, LLM_API_KEY: "   " });
+    expect(config.llm.apiKey).toBeUndefined();
+  });
+
+  it("rejects an endpoint that is not an absolute http(s) URL", () => {
+    // "localhost:11434" without a scheme is the classic version of this mistake, and it
+    // parses as a URL with protocol "localhost:" rather than failing outright.
+    for (const bad of ["localhost:11434", "not a url", "/v1"]) {
+      expect(() => loadConfig({ ...validEnv, LLM_BASE_URL: bad })).toThrow(
+        /LLM_BASE_URL/,
+      );
+    }
+    expect(() =>
+      loadConfig({ ...validEnv, LLM_BASE_URL: "ftp://example.com" }),
+    ).toThrow(/http or https/);
   });
 
   it("applies worker defaults when unset", () => {
     const config = loadConfig(validEnv);
     expect(config.worker.pollIntervalMs).toBe(2000);
     expect(config.worker.maxExtractionAttempts).toBe(3);
-    expect(config.llm.model).toBe("claude-sonnet-5");
   });
 
   it("takes worker overrides from the environment", () => {
@@ -36,11 +69,9 @@ describe("loadConfig", () => {
       ...validEnv,
       WORKER_POLL_MS: "500",
       EXTRACTION_MAX_ATTEMPTS: "5",
-      LLM_MODEL: "claude-opus-5",
     });
     expect(config.worker.pollIntervalMs).toBe(500);
     expect(config.worker.maxExtractionAttempts).toBe(5);
-    expect(config.llm.model).toBe("claude-opus-5");
   });
 
   it("rejects a non-positive or non-integer interval", () => {
@@ -50,17 +81,11 @@ describe("loadConfig", () => {
       );
     }
   });
-
-  it("rejects an LLM provider that is not wired up", () => {
-    expect(() => loadConfig({ ...validEnv, LLM_PROVIDER: "ollama" })).toThrow(
-      /Unsupported LLM_PROVIDER/,
-    );
-  });
 });
 
 describe("getDbPath", () => {
   it("does not require LLM configuration", () => {
-    // The db layer must be usable without an API key — `next build` and the schema tests
+    // The db layer must be usable without an endpoint — `next build` and the schema tests
     // both open a database with no LLM configured at all.
     expect(getDbPath({ LIFEOPS_DB_PATH: "/data/lifeops.db" })).toBe(
       "/data/lifeops.db",

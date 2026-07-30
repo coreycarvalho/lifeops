@@ -35,8 +35,10 @@ Not a product for others. Design for exactly one user.
    shown in-UI for web captures and pushed via notifier for API captures, with a one-tap
    "wrong" affordance (correction UX can be crude in MVP). This is the trust mechanism.
 4. **Data sovereignty.** All data at rest stays on the deployment host (SQLite +
-   sqlite-vec). LLM API calls are acceptable; the LLM sits behind a provider interface so
-   a local model is a config change.
+   sqlite-vec), and through M6 nothing captured leaves the operator's network at all:
+   inference runs against a local OpenAI-compatible endpoint. The LLM sits behind a
+   provider interface, so adopting a hosted model later stays a config change — but it is
+   not a milestone commitment and nothing is built to make it convenient.
 5. **Hybrid retrieval, not pure RAG.** "All open commitments older than 2 weeks" is a SQL
    query, not a similarity search. An LLM router picks structured query / semantic search /
    both, then synthesizes.
@@ -134,8 +136,12 @@ verdict against.
   Never run extraction or trigger evaluation inside request handlers.
 - All state (SQLite file, config) under ONE mounted volume so backups are a volume copy.
 - Notifier and LLM provider are pluggable interfaces; concrete choices are config
-  (env: LLM API key; config file: ntfy URL/topic, trigger thresholds, timezone —
-  all schedule math runs in the configured local timezone).
+  (env: LLM endpoint URL + model name; config file: ntfy URL/topic, trigger thresholds,
+  timezone — all schedule math runs in the configured local timezone).
+- **Inference is not co-located.** The sizing target above cannot run a model that does
+  reliable structured extraction, so LifeOps points at an OpenAI-compatible endpoint
+  elsewhere on the operator's network — Ollama is what's verified. Model weights are never
+  part of the image or the state volume, and the LifeOps containers stay small.
 - The app itself ships no auth (single user behind network-level access control — reverse
   proxy, VPN, or LAN).
 
@@ -154,7 +160,8 @@ ships behavior + tests in the same PR.
   CI, Compose file: web + worker + one volume, documented env/config). **M1 ends with the
   app deployed on a real host** — M2 needs real captures, so deployment cannot trail the
   features.
-- **M2 — Extraction quality.** Iterate the prompt against ~20 real captures; alias-based
+- **M2 — Extraction quality.** Iterate the prompt against ~20 real captures — the local
+  model is part of what's under evaluation, and swapping it is a config change; alias-based
   entity dedupe (same provider mentioned two ways → one entity); thread assignment;
   corrections recorded.
 - **M3 — Scheduler + ntfy.** Notifier interface; event-upcoming + owed_to_me escalation
@@ -168,5 +175,5 @@ ships behavior + tests in the same PR.
   view. Final acceptance: on a clean host, `docker compose up` with documented config
   yields the full loop — capture → echo → extraction → triggers → dashboard → query.
 
-**Parking lot (do not start):** voice/photo/email capture, local LLM provider swap,
-knowledge/belief layer.
+**Parking lot (do not start):** voice/photo/email capture, hosted/proprietary LLM
+providers, knowledge/belief layer.

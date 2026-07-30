@@ -1,36 +1,53 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LifeOps
 
-## Getting Started
+A single-user, self-hosted personal assistant and **external memory system**. Dump
+unstructured life-admin information into one inbox with zero organizational decisions; an
+LLM extracts typed records, and the system gives back natural-language query, proactive
+triggers, and a glanceable dashboard.
 
-First, run the development server:
+> Status: **pre-build**. The spec and architecture are settled; implementation follows
+> the milestones in [docs/ROADMAP.md](docs/ROADMAP.md). This repo is developed 100% by
+> coding agents — see [AGENTS.md](AGENTS.md).
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Why
+
+Every prior tool (folders, Notion, task apps) fails at capture time by demanding
+classification decisions. LifeOps inverts that: capture requires zero decisions, the LLM
+does the filing, and the system proves it understood via a **capture echo**. The
+highest-leverage feature is prospective memory — surfacing things you'd forgotten exist,
+including other people's promises to you (`owed_to_me` is a first-class concept).
+
+Grounded in cognitive-science design principles (extended mind, filing-vs-piling,
+transactive memory) — see [docs/SPEC.md](docs/SPEC.md).
+
+## Shape
+
+```
+capture inbox → raw immutable dumps → async LLM extraction → typed tables + local embeddings
+                                                     ↓
+                          triggers (ntfy) · NL query (hybrid SQL + semantic) · dashboard
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- **Stack:** Next.js (TypeScript), SQLite + sqlite-vec, Vercel AI SDK (Anthropic now,
+  local models swappable), ntfy notifications, Docker Compose.
+- **Data sovereignty:** all data at rest stays on your hardware. LLM API calls are the
+  only egress, and the provider is swappable for a local model.
+- Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ·
+  decisions: [docs/DECISIONS.md](docs/DECISIONS.md)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Development
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm install
+npm run dev       # http://localhost:3000
+npm run lint
+npm run typecheck
+npm test
+```
 
-## Learn More
+Deployment target is Docker Compose on modest homelab hardware (arm64/amd64); packaging
+lands with milestone M1.
 
-To learn more about Next.js, take a look at the following resources:
+## License
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+[MIT](LICENSE)

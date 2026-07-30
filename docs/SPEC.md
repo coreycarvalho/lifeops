@@ -78,6 +78,9 @@ All records link back to their source dump (`dump_id`) for provenance.
 - **threads**: id, name, status (open | closed), last_activity_at (derived). Groups related
   records ("medical workup", "rental conversion"). Extraction assigns records to threads;
   the LLM may propose new threads.
+- **trigger_fires**: id, rule, fired_at, related record (event/commitment/thread id),
+  status (fired | dismissed | acted). Powers dismissal suppression and per-rule trigger
+  precision.
 - **retrieval_log** (instrumentation): id, timestamp, query,
   mode (search | trigger | dashboard_tap), success (bool, user-flagged or inferred), notes
 
@@ -126,8 +129,13 @@ verdict against.
 
 - Homelab: Raspberry Pi 5 / Beelink N150, shared with other services. Modest footprint;
   multi-arch images (arm64 + amd64); Docker Compose packaging.
+- Process model: web app + a long-running worker (async extraction, cron-style scheduler).
+  Never run extraction or trigger evaluation inside request handlers.
 - All state (SQLite file, config) under ONE mounted volume so backups are a volume copy.
-- Notifier and LLM provider are pluggable interfaces; concrete choices are config.
+- Notifier and LLM provider are pluggable interfaces; concrete choices are config
+  (env: LLM API key; config file: ntfy URL/topic, trigger thresholds, owner timezone —
+  all schedule math runs in the owner's local timezone).
+- The app itself ships no auth (single user behind homelab access control).
 
 ## Build order — start at M1
 
@@ -136,19 +144,26 @@ query-first is the standard mistake** (rebuilds "chat with notes," which fails t
 unknown-unknowns problem). Don't reorder without a decision-log entry. Each milestone
 ships behavior + tests in the same PR.
 
-- **M1 — Capture core.** Schema/migrations; dump via web box or `POST /api/dumps`, raw +
-  immutable; async extraction → typed records with `dump_id` provenance and stored
-  `extraction_version` (re-processing idempotent); echo with "wrong" flag; retrieval_log
-  table exists.
+- **M1 — Capture core, deployed.** Schema/migrations; dump via web box or
+  `POST /api/dumps`, raw + immutable; async extraction in the worker → typed records with
+  `dump_id` provenance and stored `extraction_version` (re-processing idempotent); echo
+  with "wrong" flag — a failed extraction is echoed as failed, never silent; retrieval_log
+  table exists. Ships Docker packaging (multi-arch image, Compose file: web + worker + one
+  volume, documented env/config). **M1 ends with the app running on the homelab** — M2
+  needs real captures, so deployment cannot trail the features.
 - **M2 — Extraction quality.** Iterate the prompt against ~20 real captures; alias-based
   entity dedupe (same provider mentioned two ways → one entity); thread assignment;
   corrections recorded.
 - **M3 — Scheduler + ntfy.** Notifier interface; event-upcoming + owed_to_me escalation
-  rules first; thresholds in config; every fire logged with acted-on status.
+  rules first; thresholds/timezone from config; every fire recorded in trigger_fires,
+  which also drives dismissal suppression.
 - **M4 — Dashboard.** Four zones, one query each; date lens; one-tap "useful" logging.
 - **M5 — Hybrid query.** NL endpoint; LLM router (SQL / semantic / both); sqlite-vec
-  index; every query logged with success/fail flag.
-- **M6 — Instrumentation polish.** One-tap affordances everywhere; metrics view.
+  index with a one-shot backfill over all existing dumps (they're immutable, so backfill
+  is trivial); every query logged with success/fail flag.
+- **M6 — Instrumentation polish + ship check.** One-tap affordances everywhere; metrics
+  view. Final acceptance: on a clean host, `docker compose up` with documented config
+  yields the full loop — capture → echo → extraction → triggers → dashboard → query.
 
 **Parking lot (do not start):** voice/photo/email capture, local LLM provider swap,
 knowledge/belief layer.

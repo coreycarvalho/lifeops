@@ -26,7 +26,9 @@ later milestone, or the issue is wrong and should be fixed before the code is.
 2. Dumps are immutable. Extraction writes new records; it never mutates raw dumps.
 3. Every capture path ships with a capture echo and a "wrong" affordance. This is the
    trust mechanism.
-4. All data at rest stays local. LLM API calls are fine; persistent storage off-box is not.
+4. Nothing captured leaves the operator's network. Data at rest stays on-box, and through
+   M6 inference runs against a local OpenAI-compatible endpoint — no hosted-provider calls,
+   no off-box persistent storage.
 5. Retrieval is hybrid — structured questions get SQL. Never funnel everything through
    similarity search.
 6. Trigger thresholds live in config, not code.

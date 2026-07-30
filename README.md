@@ -16,9 +16,11 @@ glanceable dashboard.
 - [AGENTS.md](AGENTS.md) — invariants and rules for the agents building this
 
 Stack: Next.js/TypeScript, SQLite + sqlite-vec, Vercel AI SDK, ntfy, Docker Compose —
-runs anywhere Docker runs, sized for a Raspberry-Pi-class box. All data at rest stays on
-your host; LLM API calls are the only egress, and the provider is swappable for a local
-model.
+runs anywhere Docker runs, sized for a Raspberry-Pi-class box. **Nothing you capture leaves
+your network.** Data at rest stays on your host, and extraction runs against a local
+OpenAI-compatible endpoint you point it at (Ollama is what's verified) — so inference can
+live on a machine with a GPU while LifeOps itself stays small enough for a Pi. No API keys,
+no third-party inference.
 
 ## License
 

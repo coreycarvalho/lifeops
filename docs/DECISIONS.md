@@ -81,3 +81,31 @@ entity-mentions table plus its own entry here.
 SPEC's config *file* holds ntfy URL/topic, trigger thresholds, and timezone — none of which
 exist before M3. Adding the file now would mean shipping an empty one; M3 introduces it
 alongside the first thresholds it has to carry.
+
+## 2026-07-30 — Local inference only through M6; hosted providers parked
+
+Supersedes the LLM half of "TypeScript full-stack" above and flips the SPEC parking lot:
+local was the parked item, and is now the only option built. Extraction talks to an
+OpenAI-compatible endpoint on the operator's network, so no capture ever leaves it — the
+strongest reading of the data-sovereignty requirement, and it removes the API key as a
+setup step and a running cost.
+
+Accepted cost: a small local model extracts less well than a frontier one. SPEC already
+takes this position ("perfect NLP" is a non-goal; errors are fine *if* the echo makes them
+visible), so the trust mechanism carries more weight now, and M2 evaluates the model as
+well as the prompt.
+
+## 2026-07-30 — Inference is not co-located with LifeOps
+
+A Raspberry-Pi-class box cannot run a model that does reliable structured extraction, so
+Compose ships web + worker + migrate only and points at an endpoint elsewhere on the LAN.
+Model weights stay out of the image and off the state volume, keeping "back up one volume"
+true. Ollama is what gets verified; the transport is plain OpenAI-compatible, so another
+server is a URL change.
+
+## 2026-07-30 — No `LLM_PROVIDER` switch
+
+With one transport and one code path, a provider enum would be a knob with a single valid
+position. Config is `LLM_BASE_URL` + `LLM_MODEL`, plus an optional `LLM_API_KEY` for
+endpoints behind a proxy that wants one. Adding a hosted provider later means adding a
+package and an entry here — deliberately not a config flag.

@@ -18,9 +18,18 @@ export type Config = {
   /** SQLite file path. Lives on the single mounted volume in the deployed setup. */
   dbPath: string;
   llm: {
-    provider: "anthropic";
+    /**
+     * An OpenAI-compatible endpoint on the operator's own network — nothing captured
+     * leaves it. Ollama is what's verified; see docs/DECISIONS.md.
+     */
+    baseUrl: string;
+    /** The model name as the endpoint knows it, e.g. what `ollama list` reports. */
     model: string;
-    apiKey: string;
+    /**
+     * Only needed when the endpoint sits behind a proxy that wants one. Ollama ignores
+     * it, so a local setup has no secret at all.
+     */
+    apiKey?: string;
   };
   worker: {
     /** How long the worker sleeps when it finds no pending dumps. */
@@ -45,6 +54,25 @@ function required(name: string, env: Env): string {
   return value;
 }
 
+function requireUrl(name: string, env: Env): string {
+  const value = required(name, env);
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new ConfigError(
+      `Environment variable ${name} must be an absolute URL, got "${value}". ` +
+        `Include the scheme, e.g. http://192.168.1.50:11434/v1`,
+    );
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new ConfigError(
+      `Environment variable ${name} must be http or https, got "${parsed.protocol}"`,
+    );
+  }
+  return value;
+}
+
 function optionalInt(
   name: string,
   fallback: number,
@@ -63,7 +91,7 @@ function optionalInt(
 
 /**
  * The database path on its own. The db layer needs only this — making it call
- * `loadConfig()` would mean opening SQLite requires an LLM API key, which is false
+ * `loadConfig()` would mean opening SQLite requires an LLM endpoint, which is false
  * and would break `next build` and db-only tests.
  */
 export function getDbPath(env: Env = process.env): string {
@@ -71,19 +99,14 @@ export function getDbPath(env: Env = process.env): string {
 }
 
 export function loadConfig(env: Env = process.env): Config {
-  const provider = env.LLM_PROVIDER ?? "anthropic";
-  if (provider !== "anthropic") {
-    throw new ConfigError(
-      `Unsupported LLM_PROVIDER "${provider}". Only "anthropic" is wired up; see docs/DECISIONS.md.`,
-    );
-  }
-
   return {
     dbPath: getDbPath(env),
     llm: {
-      provider,
-      model: env.LLM_MODEL ?? "claude-sonnet-5",
-      apiKey: required("LLM_API_KEY", env),
+      // No default: a wrong guess here fails at extraction time, long after startup,
+      // and the operator is the only one who knows what their endpoint serves.
+      baseUrl: requireUrl("LLM_BASE_URL", env),
+      model: required("LLM_MODEL", env),
+      apiKey: env.LLM_API_KEY?.trim() || undefined,
     },
     worker: {
       pollIntervalMs: optionalInt("WORKER_POLL_MS", 2000, env),

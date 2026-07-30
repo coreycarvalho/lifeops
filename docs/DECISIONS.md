@@ -1,43 +1,34 @@
 # Decision Log
 
-Two sentences at decision time; disproportionately valuable months later. Append-only.
-Format: date, decision, reasoning. Supersede by adding a new entry, not editing.
+Append-only. Two sentences at decision time. Record only decisions whose "why" a future
+agent could NOT reconstruct from the code. Supersede by adding a new entry, not editing.
 
 ---
 
-## 2026-07-30 — TypeScript full-stack (Next.js App Router)
+## 2026-07-30 — TypeScript full-stack (Next.js + Vercel AI SDK), not Python
 
 One language and one toolchain for a repo maintained entirely by coding agents; Next.js
-gives a genuinely good UI story without a second stack to garden. Python's LLM tooling
-advantage is neutralized by the Vercel AI SDK covering extraction/structured output well.
+gives a real UI story without a second stack. Python's LLM-tooling edge is neutralized by
+the AI SDK, which also keeps Anthropic → local-model a config change.
 
-## 2026-07-30 — SQLite (better-sqlite3) + sqlite-vec, not Postgres
+## 2026-07-30 — SQLite (better-sqlite3 + sqlite-vec), not Postgres
 
 Single user, single writer, one file to back up, lowest footprint on shared homelab
-hardware. Drizzle handles schema/migrations; complex queries are written in plain SQL for
+hardware. Drizzle for schema/migrations only; complex queries in plain SQL for
 inspectability.
 
-## 2026-07-30 — Vercel AI SDK as the LLM abstraction
+## 2026-07-30 — Build order is triggers/dashboard before query
 
-Provider-agnostic interface with structured-output support; Anthropic
-(`@ai-sdk/anthropic`) now, a local Ollama-compatible provider later as a config change.
-
-## 2026-07-30 — ntfy as the first Notifier implementation
-
-Self-hostable, trivial HTTP publish API, fits the homelab. Built behind a pluggable
-`Notifier` interface so the channel is swappable.
-
-## 2026-07-30 — Capture echo lands in-UI *and* via notification
-
-Web captures echo inline; API captures (future voice/email surfaces) echo via the
-notifier. Both paths keep the trust loop intact.
-
-## 2026-07-30 — MIT license
-
-Personal open-source tool; simplest permissive default, zero friction.
+Query-first rebuilds "chat with notes," which fails the unknown-unknowns problem the
+system exists to solve. See Build order in SPEC.md; reordering requires an entry here.
 
 ## 2026-07-30 — Backup strategy deferred
 
-Deliberately open. Constraint recorded now: all state lives under one mounted volume so
-any future choice (owner-managed restic/borg, or built-in nightly `sqlite3 .backup`)
-slots in without app changes. Tracked as an open issue.
+Deliberately open (tracked in issue #1). Constraint locked now: all state under one
+mounted volume, so any future choice (owner-managed restic/borg vs. built-in nightly
+`sqlite3 .backup`) needs no app changes.
+
+## 2026-07-30 — eslint 9 and TypeScript 5.9 held at current majors
+
+eslint-config-next is built against eslint 9, and TS 7's native compiler is too new for a
+zero-gardening repo. Revisit when Next moves.

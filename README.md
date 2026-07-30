@@ -15,8 +15,10 @@ glanceable dashboard.
 - [docs/DECISIONS.md](docs/DECISIONS.md) — why the non-obvious choices were made
 - [AGENTS.md](AGENTS.md) — invariants and rules for the agents building this
 
-Stack: Next.js/TypeScript, SQLite + sqlite-vec, Vercel AI SDK, ntfy, Docker Compose on
-homelab hardware. All data at rest stays local.
+Stack: Next.js/TypeScript, SQLite + sqlite-vec, Vercel AI SDK, ntfy, Docker Compose —
+runs anywhere Docker runs, sized for a Raspberry-Pi-class box. All data at rest stays on
+your host; LLM API calls are the only egress, and the provider is swappable for a local
+model.
 
 ## License
 

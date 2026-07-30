@@ -35,7 +35,7 @@ Everything else (stack, layout, commands), infer from the code and `package.json
   The two blessed interfaces are the LLM provider (via AI SDK) and `Notifier` — new
   abstractions need a decision-log entry and ≥3 call sites.
 - Plain SQL for complex queries; Drizzle for schema/migrations only.
-- Boring, maintainable choices — this must survive near-zero gardening on shared homelab
+- Boring, maintainable choices — this must survive near-zero gardening on modest shared
   hardware (arm64 + amd64, Docker Compose, all state under one volume).
 - New dependency, new interface, changed threshold semantics, or any spec deviation →
   append to `docs/DECISIONS.md` in the same PR. No silent exceptions.

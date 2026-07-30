@@ -1,6 +1,6 @@
 # LifeOps — Product Spec
 
-Single-user, self-hosted personal assistant / external memory system. The owner dumps
+Single-user, self-hosted personal assistant / external memory system. The user dumps
 unstructured information into a single inbox with **zero organizational decisions**; the
 system extracts structure into typed tables and gives back three things:
 
@@ -13,15 +13,15 @@ Not a product for others. Design for exactly one user.
 ## Design philosophy (justifies the hard requirements)
 
 - **Extended mind (Clark & Chalmers):** value = retrieval friction + trust, not storage
-  volume. If the owner can't trust that capture worked, he keeps shadow-remembering and
+  volume. If the user can't trust that capture worked, they keep shadow-remembering and
   the system's value collapses.
 - **Filing vs. piling (Malone):** classification at capture time is the failure mode of
   every prior tool. The LLM classifies; the schema is an internal detail.
-- **Prospective vs. retrospective memory:** search only answers questions the owner
-  already thought to ask. The high-value feature is the trigger — surfacing what he'd
+- **Prospective vs. retrospective memory:** search only answers questions the user
+  already thought to ask. The high-value feature is the trigger — surfacing what they'd
   forgotten exists.
-- **Transactive memory (Wegner):** the owner must be able to *stop remembering* the moment
-  he dumps — hence visible confirmation of extraction (capture echo).
+- **Transactive memory (Wegner):** the user must be able to *stop remembering* the moment
+  they dump — hence visible confirmation of extraction (capture echo).
 - **Orienteering (Teevan):** the dashboard exists because search can't solve unknown unknowns.
 
 ## Hard requirements
@@ -34,9 +34,9 @@ Not a product for others. Design for exactly one user.
    captured — e.g. `Got it: tilt table → Jun 22; furnace quote due Fri (contractor)` —
    shown in-UI for web captures and pushed via notifier for API captures, with a one-tap
    "wrong" affordance (correction UX can be crude in MVP). This is the trust mechanism.
-4. **Data sovereignty.** All data at rest stays local (SQLite + sqlite-vec on the owner's
-   homelab). LLM API calls are acceptable; the LLM sits behind a provider interface so a
-   local model is a config change.
+4. **Data sovereignty.** All data at rest stays on the deployment host (SQLite +
+   sqlite-vec). LLM API calls are acceptable; the LLM sits behind a provider interface so
+   a local model is a config change.
 5. **Hybrid retrieval, not pure RAG.** "All open commitments older than 2 weeks" is a SQL
    query, not a similarity search. An LLM router picks structured query / semantic search /
    both, then synthesizes.
@@ -54,7 +54,7 @@ claim versioning. Raw dumps may be captured and embedded, but build NO structure
 yet — building the fun knowledge layer first is how these projects die; the admin layer
 forces daily contact.
 
-**Non-goals:** multi-user anything; auth beyond basic homelab access control; email/
+**Non-goals:** multi-user anything; auth beyond network-level access control; email/
 calendar *automation* (memory system, not an agent); mobile app (responsive web +
 notifications suffice); perfect NLP (extraction errors are fine IF the echo makes them
 visible).
@@ -127,15 +127,17 @@ verdict against.
 
 ## Deployment constraints (not inferable from code — respect these)
 
-- Homelab: Raspberry Pi 5 / Beelink N150, shared with other services. Modest footprint;
-  multi-arch images (arm64 + amd64); Docker Compose packaging.
+- Self-hosted on modest hardware — a Raspberry-Pi-class box sharing resources with other
+  services is the sizing target. Keep the footprint small; publish multi-arch images
+  (arm64 + amd64) to a public registry (GHCR); Docker Compose is the packaging.
 - Process model: web app + a long-running worker (async extraction, cron-style scheduler).
   Never run extraction or trigger evaluation inside request handlers.
 - All state (SQLite file, config) under ONE mounted volume so backups are a volume copy.
 - Notifier and LLM provider are pluggable interfaces; concrete choices are config
-  (env: LLM API key; config file: ntfy URL/topic, trigger thresholds, owner timezone —
-  all schedule math runs in the owner's local timezone).
-- The app itself ships no auth (single user behind homelab access control).
+  (env: LLM API key; config file: ntfy URL/topic, trigger thresholds, timezone —
+  all schedule math runs in the configured local timezone).
+- The app itself ships no auth (single user behind network-level access control — reverse
+  proxy, VPN, or LAN).
 
 ## Build order — start at M1
 
@@ -148,9 +150,10 @@ ships behavior + tests in the same PR.
   `POST /api/dumps`, raw + immutable; async extraction in the worker → typed records with
   `dump_id` provenance and stored `extraction_version` (re-processing idempotent); echo
   with "wrong" flag — a failed extraction is echoed as failed, never silent; retrieval_log
-  table exists. Ships Docker packaging (multi-arch image, Compose file: web + worker + one
-  volume, documented env/config). **M1 ends with the app running on the homelab** — M2
-  needs real captures, so deployment cannot trail the features.
+  table exists. Ships Docker packaging (multi-arch image built and published to GHCR by
+  CI, Compose file: web + worker + one volume, documented env/config). **M1 ends with the
+  app deployed on a real host** — M2 needs real captures, so deployment cannot trail the
+  features.
 - **M2 — Extraction quality.** Iterate the prompt against ~20 real captures; alias-based
   entity dedupe (same provider mentioned two ways → one entity); thread assignment;
   corrections recorded.

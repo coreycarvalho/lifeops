@@ -13,7 +13,7 @@ the AI SDK, which also keeps Anthropic → local-model a config change.
 
 ## 2026-07-30 — SQLite (better-sqlite3 + sqlite-vec), not Postgres
 
-Single user, single writer, one file to back up, lowest footprint on shared homelab
+Single user, single writer, one file to back up, lowest footprint on modest shared
 hardware. Drizzle for schema/migrations only; complex queries in plain SQL for
 inspectability.
 
@@ -25,7 +25,7 @@ system exists to solve. See Build order in SPEC.md; reordering requires an entry
 ## 2026-07-30 — Backup strategy deferred
 
 Deliberately open (tracked in issue #1). Constraint locked now: all state under one
-mounted volume, so any future choice (owner-managed restic/borg vs. built-in nightly
+mounted volume, so any future choice (operator-managed restic/borg vs. built-in nightly
 `sqlite3 .backup`) needs no app changes.
 
 ## 2026-07-30 — eslint 9 and TypeScript 5.9 held at current majors

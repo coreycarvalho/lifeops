@@ -415,3 +415,37 @@ to prevent, reintroduced one layer out in the example file.
 
 UTC is what a container falls back to anyway, so shipping it changes no behaviour; it is not a
 claim about where anyone lives, and it now sits in the block the operator is told to edit.
+
+## 2026-07-31 — The image job lives in ci.yml, gated on the checks
+
+It was its own workflow, which meant a push to main raced two independent workflows: one
+running lint, typecheck and tests, the other building and publishing `latest`. A commit that
+failed the tests but still built would be published — and `latest` is what a clean host pulls,
+so that is publishing a broken commit straight to the operator. Two workflows cannot express
+"not unless CI passed"; `needs: ci` in one workflow can.
+
+## 2026-07-31 — GHCR package visibility is a documented manual step
+
+GitHub creates a container package **private** on first publish, and the documented setup
+pulls anonymously, so the first clean host would get `pull access denied` against a SPEC that
+says "public registry". There is no API to change it — it is a one-time toggle in the repo's
+package settings — so the workflow prints the link as a notice on every publish and DEPLOY.md
+lists the symptom under troubleshooting. Recorded because "the image is published" and "the
+image can be pulled" are not the same thing, and only one of them is visible from CI.
+
+## 2026-07-31 — The gate on `web` is the boot unit, not the container
+
+The worker checks the endpoint itself, but `web` cannot: it never calls a model, and making it
+demand an LLM endpoint to boot would be a lie about what it needs (see the `getDbPath` split in
+config.ts). So after an unclean reboot the daemon can have `web` already running when `init`
+executes, and `docker compose up` will not stop a running, up-to-date container to make room
+for the ordering.
+
+The fix is in the boot path rather than the container: DEPLOY.md's systemd unit does
+`ExecStartPre=-docker compose down`, so `up` recreates everything in dependency order and
+`init` genuinely gates `web`. The residual — someone who does not use the unit and runs a bare
+`up` after an unclean restart — is stated in the runbook rather than papered over.
+
+Considered and rejected: `restart: "no"` on web, which would make every start go through
+Compose but drop crash recovery; and a schema check inside web, which is a real feature and
+belongs to a milestone that has asked for it.

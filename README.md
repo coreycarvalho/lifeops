@@ -28,9 +28,15 @@ no third-party inference.
 ## Running it
 
 ```bash
-cp .env.example .env   # LLM_BASE_URL and LLM_MODEL are the only two that matter
+cp .env.example .env
 docker compose up -d
 ```
+
+Four things to set in `.env`, and the file says which: your model endpoint
+(`LLM_BASE_URL`) and the model it serves (`LLM_MODEL`), the timezone you live in
+(`LIFEOPS_TIMEZONE` — it defaults to UTC, and every date the system derives is computed in
+it), and which interface the capture box is published on (`LIFEOPS_BIND` — loopback until
+you say otherwise, because LifeOps ships no auth).
 
 Three containers — web, extraction worker, and a one-shot `init` that checks your model
 endpoint and applies migrations before the other two start. One volume holds everything you

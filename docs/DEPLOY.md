@@ -29,11 +29,15 @@ thinking and never answer. See the README for why.
 ## Bring it up
 
 ```bash
-curl -O https://raw.githubusercontent.com/coreycarvalho/lifeops/main/docker-compose.yml
-curl -o .env https://raw.githubusercontent.com/coreycarvalho/lifeops/main/.env.example
-$EDITOR .env          # four things to set; the file says which
-docker compose up -d
+sudo mkdir -p /opt/lifeops && cd /opt/lifeops
+sudo curl -O https://raw.githubusercontent.com/coreycarvalho/lifeops/main/docker-compose.yml
+sudo curl -o .env https://raw.githubusercontent.com/coreycarvalho/lifeops/main/.env.example
+sudo $EDITOR .env     # four things to set; the file says which
+sudo docker compose up -d
 ```
+
+`/opt/lifeops` is not special — anywhere works — but the boot unit below expects the
+compose file and `.env` to be in one known directory, so pick one and stay in it.
 
 The four: `LLM_BASE_URL`, `LLM_MODEL`, `LIFEOPS_TIMEZONE` (UTC is the default and is wrong
 for almost everyone — every date the system derives is computed in this zone), and
@@ -147,14 +151,18 @@ a port. That also gives you an address LifeOps accepts for `LLM_BASE_URL`.
 ## Starting on boot
 
 `docker compose up -d` sets `web` and `worker` to restart automatically, so they come back
-after a reboot. But **Compose's ordering is not part of that**: the Docker daemon restarts
-those two from their own restart policies and never re-runs the exited `init`, so migrations
-would not be applied on a boot that follows an image change.
+after a reboot. **Compose's ordering is not part of that.** The Docker daemon restarts those
+two from their own restart policies; it does not re-run the exited `init` and it does not
+know about `depends_on`. So on a bare reboot:
 
-The worker re-checks the model endpoint on its own startup regardless — it refuses to run
-against an endpoint it cannot reach, rather than burning every waiting dump's attempts
-finding out — so a reboot cannot quietly fail your captures. For migrations, put `compose up`
-back in the boot path:
+- The worker re-checks the model endpoint itself before it will claim anything, so that half
+  of the gate holds however the process was started.
+- The **web** app does not, and a later `docker compose up` will not stop a container that is
+  already running and healthy — so web can be serving while `init` runs, or after it failed.
+- Migrations are not applied on a boot that follows an image change.
+
+Put `compose up` back in the boot path, and make it start from a clean stop so the ordering
+actually applies:
 
 ```ini
 # /etc/systemd/system/lifeops.service
@@ -167,6 +175,10 @@ After=docker.service network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/lifeops
+# Whatever the daemon restarted on its own is stopped first, so `up` recreates everything
+# in dependency order and init genuinely gates web. Leading `-` so a first boot, with
+# nothing to stop, is not an error.
+ExecStartPre=-/usr/bin/docker compose down
 ExecStart=/usr/bin/docker compose up -d
 ExecStop=/usr/bin/docker compose down
 
@@ -177,6 +189,10 @@ WantedBy=multi-user.target
 ```bash
 sudo systemctl enable --now lifeops
 ```
+
+`WorkingDirectory` has to be the directory holding `docker-compose.yml` and `.env` — the
+quick start above uses `/opt/lifeops`. Without the unit, prefer `docker compose down &&
+docker compose up -d` over a bare `up` after an unclean restart, for the same reason.
 
 ## Upgrading
 
@@ -196,6 +212,13 @@ docker compose logs init      # startup gate: the endpoint and the migrations
 docker compose logs -f worker # extraction, one line per dump
 docker compose ps             # if web and worker are missing, init failed — read its log
 ```
+
+**`pull access denied` or `manifest unknown` on a clean host.** The GHCR package is private.
+GitHub creates container packages private on first publish and there is no API to change it,
+so it is a one-time manual step on the repo:
+`https://github.com/coreycarvalho/lifeops/pkgs/container/lifeops` → *Package settings* →
+*Change visibility* → **Public**. Until then, `docker login ghcr.io` with a token that has
+`read:packages` also works.
 
 **`init` exits 1 and nothing starts.** Read its log; every message names the variable to
 change. It is the gate doing its job.

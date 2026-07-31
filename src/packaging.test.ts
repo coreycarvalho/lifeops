@@ -232,14 +232,16 @@ describe("the image", () => {
 });
 
 describe("publishing", () => {
-  const workflow = parse(read(".github/workflows/publish.yml")) as {
+  const workflow = parse(read(".github/workflows/ci.yml")) as {
     on: { push: { branches: string[] }; pull_request: unknown };
     jobs: Record<
       string,
       {
-        permissions: Record<string, string>;
+        needs?: string | string[];
+        permissions?: Record<string, string>;
         steps: {
           uses?: string;
+          run?: string;
           if?: string;
           with?: Record<string, string>;
         }[];
@@ -248,6 +250,17 @@ describe("publishing", () => {
   };
   const steps = workflow.jobs.image.steps;
   const buildStep = steps.find((s) => s.uses?.startsWith("docker/build-push-action"));
+
+  it("publishes nothing from a commit that did not pass the checks", () => {
+    // `latest` is what a clean host pulls. A separate workflow racing on the same push
+    // cannot express this, which is why the image job lives in ci.yml.
+    expect(workflow.jobs.image.needs).toBe("ci");
+
+    const checks = workflow.jobs.ci.steps.map((s) => s.run).join("\n");
+    for (const required of ["npm run lint", "npm run typecheck", "npm test"]) {
+      expect(checks).toContain(required);
+    }
+  });
 
   it("builds for both architectures", () => {
     // arm64 is the sizing target (a Pi-class box); amd64 is what most operators have spare.
@@ -269,6 +282,6 @@ describe("publishing", () => {
 
     const meta = steps.find((s) => s.uses?.startsWith("docker/metadata-action"));
     expect(meta?.with?.images).toContain("ghcr.io/");
-    expect(workflow.jobs.image.permissions.packages).toBe("write");
+    expect(workflow.jobs.image.permissions?.packages).toBe("write");
   });
 });

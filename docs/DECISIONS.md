@@ -298,3 +298,63 @@ now returns `retrying`, and the echo distinguishes "Extraction failed, trying ag
 That means the web process needs the attempt limit, so `getMaxExtractionAttempts` is split out
 the same way `getDbPath` already is: the web app never calls a model, and making it demand an
 LLM endpoint to boot would be a lie about what it needs.
+
+## 2026-07-31 — One image, three commands, and `next start` rather than standalone
+
+The web app, the extraction worker and the `init` step run from the same published image with
+different commands. Next's `output: "standalone"` prunes `node_modules` to what Next traced,
+and the worker and both CLIs run from source through `tsx` — they need `drizzle-orm`,
+`better-sqlite3`, `ai` and `tsx` itself, none of which Next traces. Two images or a standalone
+bundle plus a second `node_modules` would both be more moving parts than a chunky image, and
+issue #6 puts size explicitly out of scope: a Pi-class box can afford a large image more easily
+than a fragile one.
+
+## 2026-07-31 — The base image is Debian trixie, and this is load-bearing
+
+`better-sqlite3`'s prebuilt bindings for linux/amd64 and linux/arm64 are linked against GLIBC
+2.38. `node:24-slim` is bookworm, which ships 2.36: the image builds cleanly, passes every
+test, and then dies on first database call with `libm.so.6: version GLIBC_2.38 not found`.
+Found by running the thing, not by building it.
+
+`node:24-trixie-slim` (GLIBC 2.41) is the fix. The alternative — `npm_config_build_from_source`
+— removes the coupling entirely but pays for it with an emulated arm64 compile of sqlite3.c on
+every lockfile change in CI. Recorded because the failure is invisible at build time and the
+cause is two layers from the symptom; the compilers stay in the build stage as the fallback if
+a future prebuild moves again.
+
+## 2026-07-31 — Startup checks the model endpoint, and a bad one stops the whole stack
+
+`loadConfig` proves `LLM_BASE_URL` is a well-formed URL on the operator's own network, and
+`http://localhost:11434/v1` satisfies both while being wrong inside every container — localhost
+is the container. The web process never reads LLM config at all (deliberately: it never calls a
+model), so nothing would have caught it until the worker's first extraction, by which point
+captures have been accepted for as long as the operator has been using it.
+
+So `init` probes `{LLM_BASE_URL}/models` and checks the endpoint serves `LLM_MODEL` before it
+applies migrations, and `web` and `worker` wait on it succeeding. Connection failures retry for
+about half a minute, because a model box may be booting alongside this one; anything that
+*answered* fails immediately, because a 404 does not fix itself.
+
+Accepted cost: if the model box is down when the host boots, LifeOps stays down rather than
+coming up degraded. That is the trade issue #6 asks for — "startup fails with a clear message
+rather than accepting captures it can never extract" — and a capture the system silently cannot
+extract is a direct hit on invariant 3, which is the whole trust mechanism.
+
+## 2026-07-31 — Compose pins `LIFEOPS_DB_PATH`, overriding the operator's `.env`
+
+Where state lives *inside* the container is a packaging fact, not a preference. An operator who
+could point it somewhere other than the mounted volume could silently make "back up one volume"
+false, and would find out at restore time. `environment:` beats `env_file:`, so `.env` documents
+the variable and says it is ignored under Compose.
+
+## 2026-07-31 — `yaml` (devDependency) so packaging behaviours are tested, not just written
+
+"One volume", "migrations run once with nothing racing them", "web and worker are separate
+processes" and "main publishes both architectures" are behaviours of `docker-compose.yml` and
+the publish workflow. They are as load-bearing as anything in `src/` — a second service given
+its own volume breaks backups and nobody notices until a restore — and hand-rolled regex over
+YAML would rot at the first reformat. `src/packaging.test.ts` parses the real files.
+
+What it cannot cover is that the image builds and runs, which is `docker buildx build
+--platform linux/amd64,linux/arm64` and `docker compose up`, per issue #6's own note that the
+real-host run is the operator's.

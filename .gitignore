@@ -38,6 +38,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# the documented configuration, which has no secret in it by design
+!.env.example
 
 # vercel
 .vercel

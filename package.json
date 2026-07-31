@@ -11,6 +11,8 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate-cli.ts",
+    "preflight": "tsx src/llm/preflight-cli.ts",
+    "init": "npm run preflight && npm run db:migrate",
     "worker": "tsx src/worker/index.ts",
     "verify:llm": "tsx src/llm/verify.ts"
   },
@@ -38,6 +40,7 @@
     "jsdom": "^29.1.1",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "yaml": "^2.9.0"
   }
 }

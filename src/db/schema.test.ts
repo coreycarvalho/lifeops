@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { deleteUnmentionedEntities } from "@/extraction/identity";
 import { createTestDb, type TestDb } from "@/test/db";
 import { runMigrations } from "./migrate";
 import {
@@ -9,7 +10,7 @@ import {
   decisions,
   dumps,
   entities,
-  entityAliases,
+  entityMentions,
   eventEntities,
   events,
   retrievalLog,
@@ -41,16 +42,30 @@ function insertDump(overrides: Partial<typeof dumps.$inferInsert> = {}) {
   return row;
 }
 
+/**
+ * An entity plus the mention that ties it to a dump. Entities carry no `dump_id` — one can
+ * outlive the dump that created it (see src/extraction/identity.ts) — so provenance is a
+ * second row, and every caller here wants both.
+ */
 function insertEntity(dumpId: string, overrides: Record<string, unknown> = {}) {
   const row = {
     id: randomUUID(),
-    dumpId,
     createdAt: NOW,
     name: "Dr. Alvarez",
     type: "provider" as const,
     ...overrides,
   };
   ctx.db.insert(entities).values(row).run();
+  ctx.db
+    .insert(entityMentions)
+    .values({
+      id: randomUUID(),
+      entityId: row.id,
+      dumpId,
+      alias: row.name,
+      aliasNormalized: row.name.toLowerCase(),
+    })
+    .run();
   return row;
 }
 
@@ -69,7 +84,7 @@ describe("migrations", () => {
         "decisions",
         "dumps",
         "entities",
-        "entity_aliases",
+        "entity_mentions",
         "event_entities",
         "events",
         "retrieval_log",
@@ -156,8 +171,14 @@ describe("provenance", () => {
     const entity = insertEntity(dump.id);
 
     ctx.db
-      .insert(entityAliases)
-      .values({ id: randomUUID(), entityId: entity.id, alias: "alvarez" })
+      .insert(entityMentions)
+      .values({
+        id: randomUUID(),
+        entityId: entity.id,
+        dumpId: dump.id,
+        alias: "Alvarez",
+        aliasNormalized: "alvarez",
+      })
       .run();
 
     const thread = {
@@ -210,8 +231,7 @@ describe("provenance", () => {
     ctx.db.delete(dumps).where(eq(dumps.id, dump.id)).run();
 
     for (const table of [
-      entities,
-      entityAliases,
+      entityMentions,
       events,
       eventEntities,
       decisions,
@@ -221,6 +241,43 @@ describe("provenance", () => {
     ]) {
       expect(ctx.db.select().from(table).all()).toEqual([]);
     }
+  });
+
+  it("leaves an entity the deleted dump shared with another one", () => {
+    // Entities are the one record a dump does not own, so deleting a dump takes its
+    // mentions and stops there. That is the point: the other dump still refers to it.
+    const first = insertDump();
+    const entity = insertEntity(first.id);
+    const second = insertDump();
+    ctx.db
+      .insert(entityMentions)
+      .values({
+        id: randomUUID(),
+        entityId: entity.id,
+        dumpId: second.id,
+        alias: "the cardiologist",
+        aliasNormalized: "the cardiologist",
+      })
+      .run();
+
+    ctx.db.delete(dumps).where(eq(dumps.id, first.id)).run();
+
+    expect(ctx.db.select().from(entities).all()).toHaveLength(1);
+    expect(ctx.db.select().from(entityMentions).all()).toHaveLength(1);
+  });
+
+  it("leaves an entity nothing mentions for the next extraction to sweep", () => {
+    // The residue of the above: an entity whose only dump is gone is unreachable rather
+    // than deleted, because no foreign key ties it to a dump any more. Extraction sweeps
+    // unmentioned entities on its way through, so it does not accumulate.
+    const dump = insertDump();
+    insertEntity(dump.id);
+
+    ctx.db.delete(dumps).where(eq(dumps.id, dump.id)).run();
+    expect(ctx.db.select().from(entities).all()).toHaveLength(1);
+
+    expect(deleteUnmentionedEntities(ctx.db)).toBe(1);
+    expect(ctx.db.select().from(entities).all()).toEqual([]);
   });
 });
 
@@ -255,18 +312,46 @@ describe("cross-record links", () => {
     expect(row.counterpartyEntityId).toBeNull();
   });
 
-  it("rejects a duplicate alias on the same entity", () => {
+  it("rejects the same dump claiming the same alias for one entity twice", () => {
+    // The alias set is the union of the mentions, so a duplicate mention would be a
+    // duplicate alias — and matching would start depending on how many rows agree.
     const dump = insertDump();
     const entity = insertEntity(dump.id);
-    const alias = { id: randomUUID(), entityId: entity.id, alias: "alvarez" };
+    const mention = {
+      id: randomUUID(),
+      entityId: entity.id,
+      dumpId: dump.id,
+      alias: "Alvarez",
+      aliasNormalized: "alvarez",
+    };
 
-    ctx.db.insert(entityAliases).values(alias).run();
+    ctx.db.insert(entityMentions).values(mention).run();
     expect(() =>
       ctx.db
-        .insert(entityAliases)
-        .values({ ...alias, id: randomUUID() })
+        .insert(entityMentions)
+        // A different spelling of a name that normalises the same is the same mention.
+        .values({ ...mention, id: randomUUID(), alias: "ALVAREZ" })
         .run(),
     ).toThrow(/UNIQUE constraint failed/i);
+  });
+
+  it("lets two dumps mention the same entity", () => {
+    const first = insertDump();
+    const entity = insertEntity(first.id);
+    const second = insertDump();
+
+    ctx.db
+      .insert(entityMentions)
+      .values({
+        id: randomUUID(),
+        entityId: entity.id,
+        dumpId: second.id,
+        alias: "the cardiologist",
+        aliasNormalized: "the cardiologist",
+      })
+      .run();
+
+    expect(ctx.db.select().from(entityMentions).all()).toHaveLength(2);
   });
 });
 

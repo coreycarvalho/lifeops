@@ -6,6 +6,7 @@ import {
   decisions,
   dumps,
   entities,
+  entityMentions,
   events,
 } from "@/db/schema";
 import type { LlmProvider } from "@/llm/provider";
@@ -72,7 +73,20 @@ const FURNACE = extraction({
 
 function rowsFor(dumpId: string) {
   return {
-    entities: ctx.db.select().from(entities).where(eq(entities.dumpId, dumpId)).all(),
+    // Entities span dumps, so this dump's are the ones it mentioned — see identity.test.ts.
+    entities: ctx.db
+      .select({
+        id: entities.id,
+        createdAt: entities.createdAt,
+        name: entities.name,
+        type: entities.type,
+        notes: entities.notes,
+      })
+      .from(entities)
+      .innerJoin(entityMentions, eq(entityMentions.entityId, entities.id))
+      .where(eq(entityMentions.dumpId, dumpId))
+      .groupBy(entities.id)
+      .all(),
     events: ctx.db.select().from(events).where(eq(events.dumpId, dumpId)).all(),
     commitments: ctx.db
       .select()
@@ -158,14 +172,19 @@ describe("extracting a dump", () => {
     await extract(stubLlm(() => FURNACE), dump.id);
 
     const rows = rowsFor(dump.id);
-    const written = [
-      ...rows.entities,
-      ...rows.events,
-      ...rows.commitments,
-      ...rows.decisions,
-    ];
+    const written = [...rows.events, ...rows.commitments, ...rows.decisions];
     expect(written).not.toHaveLength(0);
     for (const record of written) expect(record.dumpId).toBe(dump.id);
+
+    // An entity is not owned by a dump — it can outlive one — so its provenance is the
+    // mention. Every entity this dump produced still names it.
+    const mentions = ctx.db
+      .select()
+      .from(entityMentions)
+      .where(eq(entityMentions.entityId, rows.entities[0].id))
+      .all();
+    expect(mentions).not.toHaveLength(0);
+    for (const mention of mentions) expect(mention.dumpId).toBe(dump.id);
   });
 
   it("timestamps the extraction when it finished, not when it started", async () => {

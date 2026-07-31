@@ -20,7 +20,8 @@ import {
  *   because SPEC allows date-only events and the dashboard's date lens filters on the date.
  * - Enums are text plus a CHECK constraint. Drizzle's `enum` option is types only; the
  *   CHECK is what actually enforces the guarantee at the storage layer.
- * - Every extracted record carries `dump_id` for provenance (SPEC data model).
+ * - Every extracted record carries `dump_id` for provenance (SPEC data model) — except
+ *   entities, which span dumps and carry provenance in `entity_mentions` instead.
  */
 
 export const EXTRACTION_STATUSES = [
@@ -62,13 +63,18 @@ export const dumps = sqliteTable(
   ],
 );
 
+/**
+ * The one table with no `dump_id`. An entity mentioned by two dumps is one row here, so
+ * ownership by a dump is exactly the thing it cannot have — see `entity_mentions` and the
+ * decision-log entry that supersedes M1's dump-owned entities.
+ *
+ * `name` and `notes` are set by whichever dump created the row and are not rewritten by a
+ * later one; the later dump contributes aliases.
+ */
 export const entities = sqliteTable(
   "entities",
   {
     id: text("id").primaryKey(),
-    dumpId: text("dump_id")
-      .notNull()
-      .references(() => dumps.id, { onDelete: "cascade" }),
     createdAt: text("created_at").notNull(),
     name: text("name").notNull(),
     type: text("type", {
@@ -81,24 +87,44 @@ export const entities = sqliteTable(
       "entities_type",
       sql`${t.type} in ('person', 'provider', 'property', 'company', 'account', 'other')`,
     ),
-    index("entities_dump_idx").on(t.dumpId),
     index("entities_name_idx").on(t.name),
   ],
 );
 
-export const entityAliases = sqliteTable(
-  "entity_aliases",
+/**
+ * One row per (dump, entity, alias): "this dump referred to this entity by this name".
+ *
+ * Does two jobs that turn out to be the same job. It is the provenance link that replaces
+ * `entities.dump_id` — every dump that mentioned an entity stays traceable from it — and it
+ * is the index dedupe matches against. An entity's alias set is the distinct union of its
+ * mentions, which is why re-extracting a dump forgets the aliases only that dump claimed
+ * instead of leaving them behind forever.
+ */
+export const entityMentions = sqliteTable(
+  "entity_mentions",
   {
     id: text("id").primaryKey(),
     entityId: text("entity_id")
       .notNull()
       .references(() => entities.id, { onDelete: "cascade" }),
+    dumpId: text("dump_id")
+      .notNull()
+      .references(() => dumps.id, { onDelete: "cascade" }),
+    /** The alias as the dump wrote it. This is what a human reads. */
     alias: text("alias").notNull(),
+    /** Casefolded, whitespace-collapsed. Matching reads this; nothing displays it. */
+    aliasNormalized: text("alias_normalized").notNull(),
   },
   (t) => [
-    uniqueIndex("entity_aliases_entity_alias_idx").on(t.entityId, t.alias),
-    // M2 dedupes new extractions against existing entities by alias match.
-    index("entity_aliases_alias_idx").on(t.alias),
+    uniqueIndex("entity_mentions_entity_dump_alias_idx").on(
+      t.entityId,
+      t.dumpId,
+      t.aliasNormalized,
+    ),
+    // Dedupe's lookup: which entity has already been called this?
+    index("entity_mentions_alias_idx").on(t.aliasNormalized),
+    // Provenance the other way round: everything one dump mentioned.
+    index("entity_mentions_dump_idx").on(t.dumpId),
   ],
 );
 

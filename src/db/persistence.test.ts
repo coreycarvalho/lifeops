@@ -7,7 +7,7 @@ import { createDump, listRecentCaptures } from "@/capture";
 import { openDb, type Db } from "@/db/client";
 import { runMigrations } from "@/db/migrate";
 import { extractDump } from "@/extraction/run";
-import { commitments, dumps, entities, events } from "@/db/schema";
+import { commitments, dumps, entityMentions, events } from "@/db/schema";
 import { extraction, stubLlm } from "@/test/llm";
 
 /**
@@ -105,8 +105,10 @@ describe("a full stack restart", () => {
     const [row] = db.select().from(dumps).where(eq(dumps.id, captured.id)).all();
     expect(row.extractionStatus).toBe("done");
     expect(listRecentCaptures(db, MAX_ATTEMPTS)[0].echo).toBe(echoBefore);
-    expect(db.select().from(entities).where(eq(entities.dumpId, captured.id)).all())
-      .toHaveLength(1);
+    // Entities are reached through their mentions now — they are not owned by a dump.
+    expect(
+      db.select().from(entityMentions).where(eq(entityMentions.dumpId, captured.id)).all(),
+    ).not.toHaveLength(0);
     expect(db.select().from(events).where(eq(events.dumpId, captured.id)).all())
       .toHaveLength(1);
     expect(db.select().from(commitments).where(eq(commitments.dumpId, captured.id)).all())
@@ -154,8 +156,12 @@ describe("the state volume", () => {
       expect(row.rawText).toBe("furnace guy is sending a quote by friday");
       expect(row.extractionStatus).toBe("done");
       expect(
-        restored.select().from(entities).where(eq(entities.dumpId, captured.id)).all(),
-      ).toHaveLength(1);
+        restored
+          .select()
+          .from(entityMentions)
+          .where(eq(entityMentions.dumpId, captured.id))
+          .all(),
+      ).not.toHaveLength(0);
     } finally {
       restored.$client.close();
       fs.rmSync(copy, { recursive: true, force: true });

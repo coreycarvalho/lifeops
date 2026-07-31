@@ -4,8 +4,7 @@ import type { Db } from "@/db/client";
 import {
   commitments,
   decisions,
-  entities,
-  entityAliases,
+  entityMentions,
   eventEntities,
   events,
   dumps,
@@ -14,6 +13,11 @@ import type { Extraction } from "@/llm/extraction";
 import type { LlmProvider } from "@/llm/provider";
 import { localDate } from "@/time";
 import { renderSummary } from "./echo";
+import {
+  deleteUnmentionedEntities,
+  normalizeAlias,
+  resolveEntity,
+} from "./identity";
 
 /**
  * The extraction step: one dump in, typed records and an echo out.
@@ -30,9 +34,13 @@ import { renderSummary } from "./echo";
 
 /**
  * Bumped when the prompt or the schema changes, so a dump's records can be traced to the
- * extraction that produced them. M2 rewrites the prompt and will bump this.
+ * extraction that produced them.
+ *
+ * 2: entities are resolved across dumps rather than created per dump. The model's answer is
+ * unchanged, but the same answer now produces different entity rows, which is the thing
+ * this number exists to distinguish. M2's prompt rewrite bumps it again.
  */
-export const EXTRACTION_VERSION = 1;
+export const EXTRACTION_VERSION = 2;
 
 /** Long enough to diagnose, short enough to render in a one-line echo. */
 const MAX_ERROR_LENGTH = 300;
@@ -261,39 +269,26 @@ function store(
   db.transaction((tx) => {
     // Re-extraction replaces rather than appends. Deleting the dump's own records is what
     // makes a second run leave the same records behind instead of a second copy; the
-    // junction rows and aliases go with them via ON DELETE CASCADE.
-    for (const table of [entities, events, commitments, decisions]) {
+    // junction rows go with them via ON DELETE CASCADE.
+    for (const table of [events, commitments, decisions]) {
       tx.delete(table).where(eq(table.dumpId, dump.id)).run();
     }
 
-    /** Every name and alias the model used, pointing at the entity row it created. */
+    // Entities are the exception: they span dumps, so there is nothing here this dump owns
+    // outright. What this dump owns is its *mentions* — those go, and an entity left with
+    // no mentions at all goes with them. An entity another dump still refers to survives.
+    tx.delete(entityMentions).where(eq(entityMentions.dumpId, dump.id)).run();
+    deleteUnmentionedEntities(tx);
+
+    /** Every name and alias the model used, pointing at the entity it resolved to. */
     const byName = new Map<string, string>();
 
     for (const entity of extraction.entities) {
-      const id = randomUUID();
-      tx.insert(entities)
-        .values({
-          id,
-          dumpId: dump.id,
-          createdAt,
-          name: entity.name,
-          type: entity.type,
-          notes: entity.notes,
-        })
-        .run();
-
-      const aliases = new Set(
-        [entity.name, ...entity.aliases]
-          .map((a) => a.trim())
-          .filter((a) => a !== ""),
-      );
-      for (const alias of aliases) {
-        tx.insert(entityAliases)
-          .values({ id: randomUUID(), entityId: id, alias })
-          .run();
-        // First entity to claim a name keeps it. Cross-dump identity is M2 (issue #7).
-        const key = alias.toLowerCase();
-        if (!byName.has(key)) byName.set(key, id);
+      const resolved = resolveEntity(tx, dump.id, entity, createdAt);
+      if (!resolved) continue;
+      for (const alias of resolved.aliases) {
+        // First entity to claim a name keeps it, within this dump.
+        if (!byName.has(alias.normalized)) byName.set(alias.normalized, resolved.id);
       }
     }
 
@@ -318,7 +313,7 @@ function store(
 
       const linked = new Set<string>();
       for (const name of event.entityNames) {
-        const entityId = byName.get(name.trim().toLowerCase());
+        const entityId = byName.get(normalizeAlias(name));
         if (entityId && !linked.has(entityId)) {
           linked.add(entityId);
           tx.insert(eventEntities).values({ eventId: id, entityId }).run();
@@ -334,9 +329,9 @@ function store(
           createdAt,
           description: commitment.description,
           direction: commitment.direction,
-          counterpartyEntityId:
-            byName.get(commitment.counterpartyName?.trim().toLowerCase() ?? "") ??
-            null,
+          counterpartyEntityId: commitment.counterpartyName
+            ? (byName.get(normalizeAlias(commitment.counterpartyName)) ?? null)
+            : null,
           dueDate: toIsoDate(commitment.dueDate),
         })
         .run();
@@ -378,8 +373,16 @@ function store(
  */
 function readStoredRecords(db: Pick<Db, "all">, dumpId: string) {
   return {
+    // An entity this dump named may have been created by an earlier one, so the echo reads
+    // through the mentions rather than off the entity row. Ordered by first mention, so the
+    // echo lists them in the order the dump introduced them either way.
     entities: db.all<{ name: string }>(
-      sql`select name from entities where dump_id = ${dumpId} order by rowid`,
+      sql`select e.name as name
+          from entities e
+          join entity_mentions m on m.entity_id = e.id
+          where m.dump_id = ${dumpId}
+          group by e.id
+          order by min(m.rowid)`,
     ),
     events: db.all<{ title: string; occursOn: string }>(
       sql`select title, occurs_on as occursOn from events

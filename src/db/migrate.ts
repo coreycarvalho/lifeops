@@ -1,6 +1,8 @@
 import path from "node:path";
+import { sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import type { Env } from "@/config";
+import { normalizeAlias } from "@/extraction/identity";
 import type { Db } from "./client";
 
 /**
@@ -15,7 +17,49 @@ export function migrationsFolder(env: Env = process.env): string {
 /**
  * Apply pending migrations. Uses drizzle-orm's runtime migrator rather than the
  * `drizzle-kit` CLI: drizzle-kit is a devDependency and is not present in the image.
+ *
+ * Foreign keys are off for the duration, which is SQLite's own documented ALTER procedure,
+ * not a shortcut. SQLite cannot drop a column that a foreign key names, so any migration
+ * that changes a table's shape has to rebuild it — copy to a new table, drop the old,
+ * rename — and a `DROP TABLE` with foreign keys enforced cascades, taking every child row
+ * with it. The `PRAGMA foreign_keys=OFF` drizzle-kit writes into the migration file cannot
+ * prevent that: the migrator runs every statement inside one transaction, and the pragma is
+ * a documented no-op there. Verified — it stays on, and the children go.
+ *
+ * So it belongs on the connection, outside the transaction, and the integrity check
+ * afterwards is what stops this from being a silent exception: nothing enforced the
+ * constraints while the migration ran, so they get checked rather than assumed.
  */
 export function runMigrations(db: Db, folder = migrationsFolder()): void {
-  migrate(db, { migrationsFolder: folder });
+  // 0001 backfills `alias_normalized` for every alias captured before it, and those values
+  // are only ever compared against what `normalizeAlias` produces at runtime. Expressing the
+  // rule a second time in SQL is what makes that comparison quietly wrong: SQLite's `lower`
+  // is ASCII-only, so `ÁLVAREZ` normalises to `Álvarez` there and `álvarez` here, and a
+  // hand-rolled whitespace collapse misses everything `\s` covers beyond tab and newline.
+  // Either way the legacy entity stops matching anything and silently duplicates. So the
+  // migration calls the same function rather than a translation of it.
+  db.$client.function(
+    "lifeops_normalize_alias",
+    { deterministic: true },
+    (value: unknown) => normalizeAlias(String(value ?? "")),
+  );
+
+  db.$client.pragma("foreign_keys = OFF");
+  try {
+    migrate(db, { migrationsFolder: folder });
+  } finally {
+    db.$client.pragma("foreign_keys = ON");
+  }
+
+  const violations = db.all<{ table: string; parent: string }>(
+    sql`pragma foreign_key_check`,
+  );
+  if (violations.length > 0) {
+    const detail = [
+      ...new Set(violations.map((v) => `${v.table} -> ${v.parent}`)),
+    ].join(", ");
+    throw new Error(
+      `Migration left ${violations.length} orphaned row(s): ${detail}`,
+    );
+  }
 }

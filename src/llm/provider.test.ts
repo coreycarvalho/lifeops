@@ -11,6 +11,7 @@ import { createLlmProvider } from "./provider";
 const LOCAL: Config["llm"] = {
   baseUrl: "http://192.168.1.50:11434/v1",
   model: "qwen3.5:2b-q4_K_M",
+  timeoutMs: 600_000,
 };
 
 const EXTRACTED = {
@@ -25,15 +26,18 @@ let requests: {
   body: Record<string, unknown>;
   headers: Record<string, string>;
 }[] = [];
+let signals: (AbortSignal | null | undefined)[] = [];
 
 beforeEach(() => {
   requests = [];
+  signals = [];
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     requests.push({
       url: String(input),
       body: JSON.parse(String(init?.body)) as Record<string, unknown>,
       headers: Object.fromEntries(new Headers(init?.headers).entries()),
     });
+    signals.push(init?.signal);
     return new Response(
       JSON.stringify({
         id: "chatcmpl-1",
@@ -81,6 +85,7 @@ describe("where extraction sends captured text", () => {
     await createLlmProvider({
       baseUrl: "http://10.0.0.9:8080/v1",
       model: "gemma4:e2b-it-qat",
+      timeoutMs: 600_000,
     }).extract({ rawText: "x", capturedOn: "2026-06-01" });
 
     expect(requests[0].url).toBe("http://10.0.0.9:8080/v1/chat/completions");
@@ -122,6 +127,40 @@ describe("how hard the model is asked to reason", () => {
       capturedOn: "2026-06-01",
     });
     expect(requests[0].body.reasoning_effort).toBe("none");
+  });
+});
+
+describe("an endpoint that stops answering", () => {
+  it("gives up rather than waiting forever", async () => {
+    // A wedged Ollama accepts the connection and then says nothing (README). Without a
+    // bound the dump sits in `processing` for good and the single worker never reaches the
+    // dumps behind it — so the call has to end on its own and take the normal failure path.
+    vi.stubGlobal(
+      "fetch",
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        }),
+    );
+
+    const extracting = createLlmProvider({ ...LOCAL, timeoutMs: 20 }).extract({
+      rawText: "furnace quote by friday",
+      capturedOn: "2026-06-01",
+    });
+
+    await expect(extracting).rejects.toThrow();
+  });
+
+  it("bounds the call with the configured timeout", async () => {
+    await createLlmProvider({ ...LOCAL, timeoutMs: 600_000 }).extract({
+      rawText: "x",
+      capturedOn: "2026-06-01",
+    });
+    // The signal covers the whole call, retries included, so one extraction gets one bound.
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(signals[0]?.aborted).toBe(false);
   });
 });
 

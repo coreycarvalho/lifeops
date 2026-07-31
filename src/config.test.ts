@@ -71,6 +71,33 @@ describe("loadConfig", () => {
     ).toThrow(/http or https/);
   });
 
+  it("bounds an extraction generously by default, and takes an override", () => {
+    // The default is a stall detector, not a latency budget: reasoning-on extraction runs
+    // into the minutes on the verified models.
+    expect(loadConfig(validEnv).llm.timeoutMs).toBe(600_000);
+    expect(loadConfig({ ...validEnv, LLM_TIMEOUT_MS: "30000" }).llm.timeoutMs).toBe(30_000);
+  });
+
+  it("falls back to the host's timezone, and takes an override", () => {
+    // Calendar dates the system derives — including the day it tells the model a note was
+    // written — are computed in this zone, not UTC.
+    expect(loadConfig(validEnv).timeZone).toBe(
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    );
+    expect(loadConfig({ ...validEnv, LIFEOPS_TIMEZONE: "America/New_York" }).timeZone).toBe(
+      "America/New_York",
+    );
+  });
+
+  it("rejects a timezone that is not a real IANA zone", () => {
+    // Silently falling back would shift every relative date the model resolves.
+    for (const bad of ["EST5", "Mars/Olympus", "GMT+5"]) {
+      expect(() => loadConfig({ ...validEnv, LIFEOPS_TIMEZONE: bad })).toThrow(
+        /LIFEOPS_TIMEZONE/,
+      );
+    }
+  });
+
   it("applies worker defaults when unset", () => {
     const config = loadConfig(validEnv);
     expect(config.worker.pollIntervalMs).toBe(2000);

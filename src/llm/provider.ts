@@ -42,6 +42,11 @@ export function createLlmProvider(llm: Config["llm"]): LlmProvider {
         schema: extractionSchema,
         system: extractionSystemPrompt(capturedOn),
         prompt: rawText,
+        // A wedged endpoint accepts the connection and then never answers, which without
+        // this leaves the dump `processing` forever and stalls every dump behind it. The
+        // signal covers the whole call including the SDK's own retries, so one extraction
+        // gets one bound. Aborting surfaces as a normal failure and takes the retry path.
+        abortSignal: AbortSignal.timeout(llm.timeoutMs),
         // Absent from the request body unless the operator set one — see config.ts.
         ...(llm.reasoningEffort
           ? {

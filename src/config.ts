@@ -1,3 +1,5 @@
+import { isTimeZone, systemTimeZone } from "@/time";
+
 /**
  * All runtime configuration, read from the environment in one place.
  *
@@ -17,6 +19,15 @@ export type Env = Record<string, string | undefined>;
 export type Config = {
   /** SQLite file path. Lives on the single mounted volume in the deployed setup. */
   dbPath: string;
+  /**
+   * IANA zone the operator lives in. Every calendar date the system derives from a stored
+   * instant is computed in it — see src/time.ts for why that matters.
+   *
+   * SPEC puts the timezone in the config *file* alongside M3's thresholds; it arrives early,
+   * as an environment variable, because M1 already has to tell the model what day a note was
+   * written on and getting that wrong shifts every relative date in the note.
+   */
+  timeZone: string;
   llm: {
     /**
      * An OpenAI-compatible endpoint on the operator's own network — nothing captured
@@ -37,6 +48,16 @@ export type Config = {
      * real captures to tune against. See docs/DECISIONS.md.
      */
     reasoningEffort?: string;
+    /**
+     * How long one extraction may take before it is abandoned.
+     *
+     * A wedged endpoint accepts the connection and then says nothing (README: "a wedged
+     * Ollama is indistinguishable from a slow model"), and without a bound that dump sits in
+     * `processing` forever and the single worker never reaches the ones behind it. The
+     * default is deliberately generous — reasoning-on extraction runs into the minutes — so
+     * this is a stall detector, not a latency budget.
+     */
+    timeoutMs: number;
   };
   worker: {
     /** How long the worker sleeps when it finds no pending dumps. */
@@ -105,9 +126,22 @@ export function getDbPath(env: Env = process.env): string {
   return required("LIFEOPS_DB_PATH", env);
 }
 
+function optionalTimeZone(name: string, env: Env): string {
+  const raw = env[name]?.trim();
+  if (!raw) return systemTimeZone();
+  if (!isTimeZone(raw)) {
+    throw new ConfigError(
+      `Environment variable ${name} must be an IANA timezone, got "${raw}". ` +
+        `For example: America/New_York`,
+    );
+  }
+  return raw;
+}
+
 export function loadConfig(env: Env = process.env): Config {
   return {
     dbPath: getDbPath(env),
+    timeZone: optionalTimeZone("LIFEOPS_TIMEZONE", env),
     llm: {
       // No default: a wrong guess here fails at extraction time, long after startup,
       // and the operator is the only one who knows what their endpoint serves.
@@ -115,6 +149,9 @@ export function loadConfig(env: Env = process.env): Config {
       model: required("LLM_MODEL", env),
       apiKey: env.LLM_API_KEY?.trim() || undefined,
       reasoningEffort: env.LLM_REASONING_EFFORT?.trim() || undefined,
+      // Ten minutes: comfortably past the ~6 minutes a reasoning-on extraction takes on the
+      // verified models, and far short of forever.
+      timeoutMs: optionalInt("LLM_TIMEOUT_MS", 600_000, env),
     },
     worker: {
       pollIntervalMs: optionalInt("WORKER_POLL_MS", 2000, env),

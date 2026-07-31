@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, lt, or, sql } from "drizzle-orm";
+import { and, eq, gte, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import {
   commitments,
@@ -12,6 +12,7 @@ import {
 } from "@/db/schema";
 import type { Extraction } from "@/llm/extraction";
 import type { LlmProvider } from "@/llm/provider";
+import { localDate } from "@/time";
 import { renderSummary } from "./echo";
 
 /**
@@ -76,6 +77,10 @@ export type ClaimedDump = {
  *
  * A dump that has failed is eligible again while it has attempts left — so it is *visibly*
  * failed the whole time it is waiting to be retried, rather than silently pending.
+ *
+ * The attempt limit applies to `pending` as well as `failed`, not just the obvious retry
+ * case: a worker that dies on its last allowed attempt leaves a row that `requeueStuckDumps`
+ * puts back, and a limit that only covered `failed` would hand it out again forever.
  */
 export function claimNextDump(
   db: Db,
@@ -89,12 +94,12 @@ export function claimNextDump(
     })
     .from(dumps)
     .where(
-      or(
-        eq(dumps.extractionStatus, "pending"),
-        and(
+      and(
+        or(
+          eq(dumps.extractionStatus, "pending"),
           eq(dumps.extractionStatus, "failed"),
-          lt(dumps.extractionAttempts, maxAttempts),
         ),
+        lt(dumps.extractionAttempts, maxAttempts),
       ),
     )
     .orderBy(dumps.createdAt)
@@ -125,22 +130,48 @@ export function claimNextDump(
 }
 
 /**
- * Put anything left mid-flight back in the queue. A worker that was killed between claiming
- * and finishing would otherwise leave a dump `processing` forever, which is the one status
- * nothing retries. The attempt it already spent is not refunded, so a crash loop still ends.
+ * Deal with anything left mid-flight. A worker killed between claiming and finishing would
+ * otherwise leave a dump `processing` forever, which is the one status nothing retries.
+ *
+ * Two outcomes, because a dump that has run out of attempts must not be parked in `pending`:
+ * `pending` renders as "working out what's in it", so it would look like extraction was
+ * still coming when nothing would ever pick it up again. The attempts already spent are
+ * never refunded, so a crash loop still terminates.
  */
-export function requeueStuckDumps(db: Db): number {
-  return db
+export function requeueStuckDumps(
+  db: Db,
+  maxAttempts: number,
+  now = new Date(),
+): { requeued: number; abandoned: number } {
+  const abandoned = db
+    .update(dumps)
+    .set({
+      extractionStatus: "failed",
+      extractionError: "The worker stopped before extraction finished",
+      extractedAt: now.toISOString(),
+    })
+    .where(
+      and(
+        eq(dumps.extractionStatus, "processing"),
+        gte(dumps.extractionAttempts, maxAttempts),
+      ),
+    )
+    .run().changes;
+
+  const requeued = db
     .update(dumps)
     .set({ extractionStatus: "pending" })
     .where(eq(dumps.extractionStatus, "processing"))
     .run().changes;
+
+  return { requeued, abandoned };
 }
 
 export async function extractDump(
   db: Db,
   provider: LlmProvider,
   dumpId: string,
+  timeZone: string,
   now = new Date(),
 ): Promise<void> {
   const [dump] = db
@@ -150,14 +181,18 @@ export async function extractDump(
     .all();
   if (!dump) throw new Error(`No dump ${dumpId}`);
 
+  // The day the note was written where the operator lives — not the UTC day the instant
+  // happens to fall on. Every relative date in the note resolves against this.
+  const capturedOn = localDate(dump.createdAt, timeZone);
+
   try {
     const extraction = await provider.extract({
       rawText: dump.rawText,
-      capturedOn: dump.createdAt.slice(0, 10),
+      capturedOn,
     });
     // Note what is NOT updated: raw_text and created_at. The dump is immutable
     // (invariant 2); extraction only ever adds records and moves status.
-    store(db, dump, extraction, now);
+    store(db, dump.id, capturedOn, extraction, now);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     db.update(dumps)
@@ -173,12 +208,13 @@ export async function extractDump(
 
 function store(
   db: Db,
-  dump: { id: string; createdAt: string },
+  dumpId: string,
+  capturedOn: string,
   extraction: Extraction,
   now: Date,
 ): void {
   const createdAt = now.toISOString();
-  const capturedOn = dump.createdAt.slice(0, 10);
+  const dump = { id: dumpId };
 
   db.transaction((tx) => {
     // Re-extraction replaces rather than appends. Deleting the dump's own records is what

@@ -57,10 +57,13 @@ export type SummarySource = {
   decisions: readonly { decision: string }[];
 };
 
-export function renderSummary(
-  records: SummarySource,
-  asOf = new Date().toISOString().slice(0, 10),
-): string {
+/**
+ * `asOf` is the date the echo is written *about* — the day the note was captured, in the
+ * operator's timezone. Required rather than defaulted, because the obvious default
+ * (`new Date().toISOString()`) is UTC and would silently print the wrong year on a
+ * date-boundary capture.
+ */
+export function renderSummary(records: SummarySource, asOf: string): string {
   const parts: string[] = [];
 
   for (const event of records.events) {

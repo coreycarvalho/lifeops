@@ -11,6 +11,11 @@ import { dumps } from "@/db/schema";
  *
  * Idempotent, and it keeps the first flag's timestamp — a double tap is a double tap, not a
  * second opinion.
+ *
+ * Only a dump whose extraction is `done` can be flagged. There is no summary to be wrong
+ * about before that: "Captured. Working out what's in it…" and "extraction failed" are the
+ * system reporting on itself, and a flag against either would count as a bad extraction in
+ * the precision metric and then quietly hide the affordance when the real summary landed.
  */
 export async function POST(
   _request: Request,
@@ -20,11 +25,21 @@ export async function POST(
   const db = getDb();
 
   const [dump] = db
-    .select({ id: dumps.id })
+    .select({ id: dumps.id, extractionStatus: dumps.extractionStatus })
     .from(dumps)
     .where(eq(dumps.id, id))
     .all();
   if (!dump) return Response.json({ error: "No such dump" }, { status: 404 });
+
+  if (dump.extractionStatus !== "done") {
+    return Response.json(
+      {
+        error: "That capture has no summary to be wrong about yet",
+        status: dump.extractionStatus,
+      },
+      { status: 409 },
+    );
+  }
 
   db.update(dumps)
     .set({ flaggedWrongAt: new Date().toISOString() })

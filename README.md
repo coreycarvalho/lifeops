@@ -43,7 +43,13 @@ LIFEOPS_DB_PATH=./data/lifeops.db
 LLM_BASE_URL=http://localhost:11434/v1   # ollama serve
 LLM_MODEL=qwen3.5:2b-q4_K_M              # whatever `ollama list` reports
 LLM_REASONING_EFFORT=none                # optional; see "Two things that look like bugs"
+LLM_TIMEOUT_MS=600000                    # optional; abandons a wedged endpoint
+LIFEOPS_TIMEZONE=America/Toronto         # optional; defaults to the host's zone
 ```
+
+`LIFEOPS_TIMEZONE` is what "today" means. Every calendar date the system derives — including
+the day it tells the model a note was written on — is computed in it, so a capture made near
+local midnight resolves "tomorrow" the way you meant it.
 
 Capture is the web app; extraction is a **separate long-running process**, and it never runs
 inside a request handler. Both, plus migrations:

@@ -191,6 +191,29 @@ describe("saying the echo got it wrong", () => {
     });
   });
 
+  it("takes the flag back when the request did not save it", async () => {
+    // Showing "marked wrong" for something the database never recorded is worse than not
+    // offering the button: the affordance would be claiming a persistence it does not have.
+    stub("POST /api/dumps/dump-1/wrong", { error: "nope" }, 500);
+    render(<CaptureBox recent={[SUMMARISED]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /mark this wrong/i }));
+    await flush();
+
+    expect(screen.queryByText(/marked wrong/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /mark this wrong/i })).toBeTruthy();
+    expect(screen.getByRole("alert")).toBeTruthy();
+  });
+
+  it("is not offered until there is a summary to be wrong about", () => {
+    // "Captured. Working out what's in it…" is the system reporting on itself. The endpoint
+    // refuses a flag against it, and the button that would send one is not shown.
+    render(<CaptureBox recent={[CAPTURED]} />);
+
+    expect(screen.queryByRole("button", { name: /mark this wrong/i })).toBeNull();
+    expect(screen.getByText("Captured. Working out what's in it…")).toBeTruthy();
+  });
+
   it("is still recorded after a reload", () => {
     // Behaviour 8, second half. A reload re-renders from what the server knows, so this is
     // the flag having actually been persisted — not page state that survived a re-render.

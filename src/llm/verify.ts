@@ -10,6 +10,7 @@
  */
 import { loadConfig } from "@/config";
 import { renderSummary } from "@/extraction/echo";
+import { localDate } from "@/time";
 import { createLlmProvider } from "./provider";
 
 const SAMPLE = `talked to the furnace guy this morning - Ray from Halton Heating.
@@ -18,13 +19,13 @@ at St Mary's, and I told Ray I'd text him the model number tonight.
 decided to go with a heat pump rather than another gas furnace, mostly because of
 the rebate expiring in the fall.`;
 
-const capturedOn = new Date().toISOString().slice(0, 10);
-
 async function main() {
   const config = loadConfig();
+  const capturedOn = localDate(new Date(), config.timeZone);
   console.log(`endpoint: ${config.llm.baseUrl}`);
   console.log(`model:    ${config.llm.model}`);
   console.log(`reasoning_effort: ${config.llm.reasoningEffort ?? "(endpoint default)"}`);
+  console.log(`timezone: ${config.timeZone}`);
   console.log(`\n--- dump (captured ${capturedOn}) ---\n${SAMPLE}\n`);
 
   const started = Date.now();
@@ -36,7 +37,7 @@ async function main() {
 
   console.log(`--- records (${elapsed}s) ---`);
   console.log(JSON.stringify(extraction, null, 2));
-  console.log(`\n--- echo ---\n${renderSummary(extraction)}`);
+  console.log(`\n--- echo ---\n${renderSummary(extraction, capturedOn)}`);
 }
 
 main().catch((error) => {

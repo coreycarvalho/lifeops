@@ -78,10 +78,22 @@ export function CaptureBox({ recent }: { recent: CaptureEcho[] }) {
   }
 
   async function flagWrong(id: string) {
-    setCaptures((current) =>
-      current.map((c) => (c.id === id ? { ...c, flaggedWrong: true } : c)),
-    );
-    await fetch(`/api/dumps/${id}/wrong`, { method: "POST" });
+    const mark = (flaggedWrong: boolean) =>
+      setCaptures((current) =>
+        current.map((c) => (c.id === id ? { ...c, flaggedWrong } : c)),
+      );
+
+    setError(null);
+    mark(true);
+    try {
+      const response = await fetch(`/api/dumps/${id}/wrong`, { method: "POST" });
+      if (!response.ok) throw new Error("That did not save. Try again?");
+    } catch (problem) {
+      // The flag is the trust affordance: showing "marked wrong" for something the database
+      // never recorded is worse than not offering the button at all. Put it back.
+      mark(false);
+      setError(problem instanceof Error ? problem.message : String(problem));
+    }
   }
 
   return (
@@ -128,7 +140,7 @@ export function CaptureBox({ recent }: { recent: CaptureEcho[] }) {
                 <span className="shrink-0 text-xs text-zinc-500">
                   marked wrong
                 </span>
-              ) : (
+              ) : capture.status !== "done" ? null : (
                 <button
                   type="button"
                   onClick={() => flagWrong(capture.id)}

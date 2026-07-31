@@ -220,3 +220,41 @@ quality against.
 
 Nothing in the architecture changes — extraction is still in the worker and capture still
 echoes immediately, which is exactly why a six-minute extraction is survivable.
+
+## 2026-07-31 — One extraction gets one time bound (`LLM_TIMEOUT_MS`)
+
+A wedged endpoint accepts the connection and then says nothing — the failure mode the README
+already warns about — and an unbounded call leaves the dump in `processing` forever while the
+single serial worker never reaches anything behind it. `generateObject` gets an
+`AbortSignal.timeout`, so the stall surfaces as an ordinary failure and takes the existing
+retry path.
+
+The default is ten minutes, which is a stall detector rather than a latency budget:
+reasoning-on extraction genuinely runs to about six. The signal covers the whole call
+including the SDK's own retries, so one extraction gets one bound rather than one per attempt.
+
+## 2026-07-31 — `LIFEOPS_TIMEZONE` arrives in M1, ahead of M3's config file
+
+SPEC puts the timezone in the config file alongside M3's thresholds, and "M1 configuration is
+environment-only" above deferred it. It cannot wait: M1 already has to tell the model what day
+a note was written on, and `createdAt.slice(0, 10)` is the UTC day. A note written at 11pm on
+July 31 in New York is stored as `2026-08-01T03:00:00Z`, so the model would be told August 1
+and every "tomorrow" and weekday in the note would resolve a day out.
+
+It arrives as an environment variable, which is consistent with M1 being env-only, and folds
+into the config file when M3 introduces one. Defaults to the host zone; an unrecognised zone
+throws at startup rather than silently falling back, because a silent fallback is exactly the
+bug being fixed. `renderSummary` now requires its `asOf` date for the same reason — the
+obvious default was UTC.
+
+## 2026-07-31 — "Wrong" is only accepted once there is a summary to be wrong about
+
+The flag is the extraction-precision metric (corrections over extractions), so it has to mean
+"the summary was wrong". "Captured. Working out what's in it…" and "extraction failed" are the
+system reporting on itself; a flag against either counts a bad extraction that never happened,
+and would then hide the affordance when the real summary arrived. The endpoint answers 409
+for anything that is not `done`, and the button is not rendered.
+
+The client also rolls the flag back if the request fails. An affordance that shows "marked
+wrong" for something the database never recorded is claiming a persistence it does not have,
+which is worse than not offering it.

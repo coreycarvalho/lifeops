@@ -37,6 +37,7 @@ afterEach(() => {
 });
 
 const NOTE = "furnace guy is sending a quote by friday";
+const TZ = "America/Toronto";
 
 function capture(body: BodyInit, init: RequestInit = {}) {
   return POST(
@@ -162,6 +163,7 @@ describe("GET /api/dumps/[id] — the echo", () => {
         }),
       ),
       id,
+      TZ,
     );
 
     const body = await (await fetchEcho(id)).json();
@@ -178,6 +180,7 @@ describe("GET /api/dumps/[id] — the echo", () => {
         throw new Error("endpoint refused the connection");
       }),
       id,
+      TZ,
     );
 
     const body = await (await fetchEcho(id)).json();
@@ -199,10 +202,33 @@ describe("POST /api/dumps/[id]/wrong", () => {
     );
   }
 
+  /** A dump with a real summary — the only thing there is to be wrong about. */
+  async function summarised() {
+    const { id } = await (await json({ text: NOTE })).json();
+    await extractDump(
+      ctx.db,
+      stubLlm(() =>
+        extraction({
+          commitments: [
+            {
+              description: "send the furnace quote",
+              direction: "owed_to_me",
+              counterpartyName: null,
+              dueDate: null,
+            },
+          ],
+        }),
+      ),
+      id,
+      TZ,
+    );
+    return id;
+  }
+
   it("records that the echo was wrong, and it survives a reload", async () => {
     // Behaviour 8. "Survives a reload" is the whole point — a flag held in the page is not
     // a record of anything.
-    const { id } = await (await json({ text: NOTE })).json();
+    const id = await summarised();
     expect((await (await fetchEcho(id)).json()).flaggedWrong).toBe(false);
 
     expect((await flag(id)).status).toBe(200);
@@ -212,7 +238,7 @@ describe("POST /api/dumps/[id]/wrong", () => {
   });
 
   it("keeps the first flag when tapped twice", async () => {
-    const { id } = await (await json({ text: NOTE })).json();
+    const id = await summarised();
     await flag(id);
     const first = dumpRow(id).flaggedWrongAt;
 
@@ -224,7 +250,7 @@ describe("POST /api/dumps/[id]/wrong", () => {
   it("leaves the dump and its records alone", async () => {
     // Flagging says the extraction was wrong; it does not delete anything. M2 records what
     // the correction actually was.
-    const { id } = await (await json({ text: NOTE })).json();
+    const id = await summarised();
     const before = dumpRow(id);
 
     await flag(id);
@@ -233,6 +259,31 @@ describe("POST /api/dumps/[id]/wrong", () => {
     expect(after.rawText).toBe(before.rawText);
     expect(after.createdAt).toBe(before.createdAt);
     expect(after.extractionStatus).toBe(before.extractionStatus);
+  });
+
+  it("refuses a flag on a capture that has no summary yet", async () => {
+    // "Captured. Working out what's in it…" is the system reporting on itself, not an
+    // extraction the user can judge. Counting it would corrupt the precision metric and
+    // hide the affordance when the real summary arrived.
+    const { id } = await (await json({ text: NOTE })).json();
+
+    expect((await flag(id)).status).toBe(409);
+    expect(dumpRow(id).flaggedWrongAt).toBeNull();
+  });
+
+  it("refuses a flag on a capture whose extraction failed", async () => {
+    const { id } = await (await json({ text: NOTE })).json();
+    await extractDump(
+      ctx.db,
+      stubLlm(() => {
+        throw new Error("endpoint refused the connection");
+      }),
+      id,
+      TZ,
+    );
+
+    expect((await flag(id)).status).toBe(409);
+    expect(dumpRow(id).flaggedWrongAt).toBeNull();
   });
 
   it("is a 404 for a dump that does not exist", async () => {

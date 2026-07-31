@@ -8,6 +8,7 @@ import {
   entities,
   events,
 } from "@/db/schema";
+import type { LlmProvider } from "@/llm/provider";
 import { createTestDb, type TestDb } from "@/test/db";
 import { extraction, failingLlm, stubLlm } from "@/test/llm";
 import {
@@ -30,8 +31,15 @@ afterEach(() => {
 
 const CAPTURED_AT = new Date("2026-06-01T09:00:00.000Z");
 
+/** Fixed so tests do not read differently depending on where they run. */
+const TZ = "America/Toronto";
+
 function capture(rawText = "furnace guy is sending a quote by friday") {
   return createDump(ctx.db, { rawText, source: "web", now: CAPTURED_AT });
+}
+
+function extract(provider: LlmProvider, dumpId: string, timeZone = TZ) {
+  return extractDump(ctx.db, provider, dumpId, timeZone);
 }
 
 /** What the model returns for the SPEC-style note used throughout these tests. */
@@ -86,7 +94,7 @@ describe("extracting a dump", () => {
     const dump = capture(rawText);
     const before = dumpRow(dump.id);
 
-    await extractDump(ctx.db, stubLlm(() => FURNACE), dump.id);
+    await extract(stubLlm(() => FURNACE), dump.id);
 
     const after = dumpRow(dump.id);
     expect(after.rawText).toBe(rawText);
@@ -99,17 +107,54 @@ describe("extracting a dump", () => {
     const dump = capture();
     const llm = stubLlm(() => FURNACE);
 
-    await extractDump(ctx.db, llm, dump.id);
+    await extract(llm, dump.id);
 
     expect(llm.calls).toEqual([
       { rawText: "furnace guy is sending a quote by friday", capturedOn: "2026-06-01" },
     ]);
   });
 
+  it("uses the operator's calendar date, not the UTC one", async () => {
+    // A note written at 11pm on July 31 in New York is stored as 2026-08-01T03:00:00Z.
+    // Handing the model August 1 shifts "tomorrow" and every weekday in the note by a day.
+    const dump = createDump(ctx.db, {
+      rawText: "call the contractor tomorrow",
+      source: "web",
+      now: new Date("2026-08-01T03:00:00.000Z"),
+    });
+    const llm = stubLlm(() => extraction({}));
+
+    await extract(llm, dump.id, "America/New_York");
+
+    expect(llm.calls[0].capturedOn).toBe("2026-07-31");
+  });
+
+  it("dates records by the operator's day too", async () => {
+    const dump = createDump(ctx.db, {
+      rawText: "decided to switch cardiologists",
+      source: "web",
+      now: new Date("2026-08-01T03:00:00.000Z"),
+    });
+
+    await extract(
+      stubLlm(() =>
+        extraction({
+          decisions: [
+            { decision: "switch cardiologists", reasoning: null, decidedOn: null },
+          ],
+        }),
+      ),
+      dump.id,
+      "America/New_York",
+    );
+
+    expect(rowsFor(dump.id).decisions[0].decidedOn).toBe("2026-07-31");
+  });
+
   it("names the dump on every record it writes", async () => {
     // Behaviour 4 — provenance is what makes any of this auditable later.
     const dump = capture();
-    await extractDump(ctx.db, stubLlm(() => FURNACE), dump.id);
+    await extract(stubLlm(() => FURNACE), dump.id);
 
     const rows = rowsFor(dump.id);
     const written = [
@@ -124,13 +169,13 @@ describe("extracting a dump", () => {
 
   it("records the extraction version it used", async () => {
     const dump = capture();
-    await extractDump(ctx.db, stubLlm(() => FURNACE), dump.id);
+    await extract(stubLlm(() => FURNACE), dump.id);
     expect(dumpRow(dump.id).extractionVersion).toBe(EXTRACTION_VERSION);
   });
 
   it("links a commitment to its counterparty through an alias", async () => {
     const dump = capture();
-    await extractDump(ctx.db, stubLlm(() => FURNACE), dump.id);
+    await extract(stubLlm(() => FURNACE), dump.id);
 
     const rows = rowsFor(dump.id);
     expect(rows.commitments[0].counterpartyEntityId).toBe(rows.entities[0].id);
@@ -138,7 +183,7 @@ describe("extracting a dump", () => {
 
   it("echoes what it stored", async () => {
     const dump = capture();
-    await extractDump(ctx.db, stubLlm(() => FURNACE), dump.id);
+    await extract(stubLlm(() => FURNACE), dump.id);
 
     expect(dumpRow(dump.id).echo).toBe(
       "Got it: tilt table test → Jun 22; " +
@@ -154,11 +199,11 @@ describe("re-running extraction over the same dump", () => {
     const dump = capture();
     const llm = stubLlm(() => FURNACE);
 
-    await extractDump(ctx.db, llm, dump.id);
+    await extract(llm, dump.id);
     const first = rowsFor(dump.id);
     const firstEcho = dumpRow(dump.id).echo;
 
-    await extractDump(ctx.db, llm, dump.id);
+    await extract(llm, dump.id);
     const second = rowsFor(dump.id);
 
     expect(second.entities).toHaveLength(first.entities.length);
@@ -171,10 +216,10 @@ describe("re-running extraction over the same dump", () => {
 
   it("drops records the new extraction no longer finds", async () => {
     const dump = capture();
-    await extractDump(ctx.db, stubLlm(() => FURNACE), dump.id);
+    await extract(stubLlm(() => FURNACE), dump.id);
     expect(rowsFor(dump.id).events).toHaveLength(1);
 
-    await extractDump(ctx.db, stubLlm(() => extraction({})), dump.id);
+    await extract(stubLlm(() => extraction({})), dump.id);
 
     const rows = rowsFor(dump.id);
     expect(rows.events).toEqual([]);
@@ -184,10 +229,10 @@ describe("re-running extraction over the same dump", () => {
 
   it("clears an earlier failure once it succeeds", async () => {
     const dump = capture();
-    await extractDump(ctx.db, failingLlm(), dump.id);
+    await extract(failingLlm(), dump.id);
     expect(dumpRow(dump.id).extractionStatus).toBe("failed");
 
-    await extractDump(ctx.db, stubLlm(() => FURNACE), dump.id);
+    await extract(stubLlm(() => FURNACE), dump.id);
 
     const row = dumpRow(dump.id);
     expect(row.extractionStatus).toBe("done");
@@ -211,8 +256,7 @@ describe("dates the model got wrong", () => {
     // A 2B model will put "Heat Pump" in a date field. Losing the four good records that
     // came with it is the wrong trade — the echo is what surfaces the bad one.
     const dump = capture();
-    await extractDump(
-      ctx.db,
+    await extract(
       stubLlm(() =>
         extraction({
           ...FURNACE,
@@ -233,14 +277,13 @@ describe("dates the model got wrong", () => {
 
   it("dates an undated decision to the day the note was written", async () => {
     const dump = capture();
-    await extractDump(ctx.db, stubLlm(() => FURNACE), dump.id);
+    await extract(stubLlm(() => FURNACE), dump.id);
     expect(rowsFor(dump.id).decisions[0].decidedOn).toBe("2026-06-01");
   });
 
   it("treats an unusable due date as no due date rather than dropping the commitment", async () => {
     const dump = capture();
-    await extractDump(
-      ctx.db,
+    await extract(
       stubLlm(() =>
         extraction({
           commitments: [
@@ -266,7 +309,7 @@ describe("when the model call fails", () => {
   it("says so on the dump rather than failing silently", async () => {
     // Behaviour 6.
     const dump = capture();
-    await extractDump(ctx.db, failingLlm("endpoint refused the connection"), dump.id);
+    await extract(failingLlm("endpoint refused the connection"), dump.id);
 
     const row = dumpRow(dump.id);
     expect(row.extractionStatus).toBe("failed");
@@ -276,7 +319,7 @@ describe("when the model call fails", () => {
   it("keeps the dump itself intact", async () => {
     const dump = capture();
     const before = dumpRow(dump.id);
-    await extractDump(ctx.db, failingLlm(), dump.id);
+    await extract(failingLlm(), dump.id);
 
     const after = dumpRow(dump.id);
     expect(after.rawText).toBe(before.rawText);
@@ -318,7 +361,7 @@ describe("deciding what to extract next", () => {
   it("retries a failed dump while it has attempts left", async () => {
     const dump = capture();
     const claimed = claimNextDump(ctx.db, 3);
-    await extractDump(ctx.db, failingLlm(), claimed!.id);
+    await extract(failingLlm(), claimed!.id);
 
     // Visibly failed the whole time it is waiting for its next attempt.
     expect(dumpRow(dump.id).extractionStatus).toBe("failed");
@@ -333,7 +376,7 @@ describe("deciding what to extract next", () => {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const claimed = claimNextDump(ctx.db, maxAttempts);
       expect(claimed).toBeDefined();
-      await extractDump(ctx.db, failingLlm(), claimed!.id);
+      await extract(failingLlm(), claimed!.id);
     }
 
     expect(claimNextDump(ctx.db, maxAttempts)).toBeUndefined();
@@ -347,7 +390,7 @@ describe("deciding what to extract next", () => {
   it("never re-claims a dump that succeeded", async () => {
     const dump = capture();
     const claimed = claimNextDump(ctx.db, 3);
-    await extractDump(ctx.db, stubLlm(() => FURNACE), claimed!.id);
+    await extract(stubLlm(() => FURNACE), claimed!.id);
 
     expect(dumpRow(dump.id).extractionStatus).toBe("done");
     expect(claimNextDump(ctx.db, 3)).toBeUndefined();
@@ -360,9 +403,38 @@ describe("deciding what to extract next", () => {
     claimNextDump(ctx.db, 3);
     expect(dumpRow(dump.id).extractionStatus).toBe("processing");
 
-    expect(requeueStuckDumps(ctx.db)).toBe(1);
+    expect(requeueStuckDumps(ctx.db, 3)).toEqual({ requeued: 1, abandoned: 0 });
     expect(dumpRow(dump.id).extractionStatus).toBe("pending");
     // The attempt it already spent is not refunded, so a crash loop still ends.
     expect(dumpRow(dump.id).extractionAttempts).toBe(1);
+  });
+
+  it("stops a worker that keeps crashing from exceeding the attempt limit", () => {
+    // A crash on the last allowed attempt leaves a `processing` row that gets requeued to
+    // `pending`. If the limit only applied to `failed`, that dump would be handed out
+    // forever — one crash loop starving every dump behind it.
+    const dump = capture();
+    const maxAttempts = 2;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      expect(claimNextDump(ctx.db, maxAttempts)).toBeDefined();
+      requeueStuckDumps(ctx.db, maxAttempts); // stands in for the worker dying
+    }
+
+    expect(dumpRow(dump.id).extractionAttempts).toBe(maxAttempts);
+    expect(claimNextDump(ctx.db, maxAttempts)).toBeUndefined();
+  });
+
+  it("marks an out-of-attempts dump failed rather than parking it in pending", () => {
+    // `pending` reads to the user as "still working on it". A dump nothing will ever pick
+    // up again must not look like that — behaviour 6, a failed extraction is never silent.
+    const dump = capture();
+    claimNextDump(ctx.db, 1);
+
+    expect(requeueStuckDumps(ctx.db, 1)).toEqual({ requeued: 0, abandoned: 1 });
+
+    const row = dumpRow(dump.id);
+    expect(row.extractionStatus).toBe("failed");
+    expect(row.extractionError).toMatch(/worker stopped/i);
   });
 });

@@ -21,9 +21,13 @@ async function main() {
   const db = getDb();
   const provider = createLlmProvider(config.llm);
 
-  const requeued = requeueStuckDumps(db);
-  if (requeued > 0) {
-    console.log(`requeued ${requeued} dump(s) left mid-extraction`);
+  const { requeued, abandoned } = requeueStuckDumps(
+    db,
+    config.worker.maxExtractionAttempts,
+  );
+  if (requeued > 0) console.log(`requeued ${requeued} dump(s) left mid-extraction`);
+  if (abandoned > 0) {
+    console.log(`${abandoned} dump(s) had no attempts left and are marked failed`);
   }
   console.log(
     `worker up: ${config.llm.model} at ${config.llm.baseUrl}, ` +
@@ -47,7 +51,7 @@ async function main() {
     console.log(`extracting ${dump.id}`);
     // extractDump records its own failures on the dump; anything thrown past it is a bug
     // in the pipeline itself and should stop the worker loudly rather than spin.
-    await extractDump(db, provider, dump.id);
+    await extractDump(db, provider, dump.id, config.timeZone);
   }
 }
 

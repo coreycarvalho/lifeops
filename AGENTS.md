@@ -42,3 +42,8 @@ Everything else (stack, layout, commands), infer from the code and `package.json
 - New dependency, new interface, changed threshold semantics, or any spec deviation →
   append to `docs/DECISIONS.md` in the same PR. No silent exceptions.
 - `npm run lint`, `npm run typecheck`, and `npm test` pass before any commit; CI stays green.
+- `npm test` needs nothing running — the LLM is stubbed at the provider interface, and it
+  stays that way. Tests that need a model reachable are not tests. Exercising extraction
+  against a real model needs an Ollama endpoint (see "Local development" in the README);
+  if `LLM_BASE_URL` is not set, say the real-model check was skipped rather than skipping
+  it silently.

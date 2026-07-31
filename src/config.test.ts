@@ -45,6 +45,47 @@ describe("loadConfig", () => {
     expect(config.llm.apiKey).toBeUndefined();
   });
 
+  it("forces no reasoning effort of its own", () => {
+    // Behaviour 13 of issue #5: how hard the model reasons is configuration. Leaving it
+    // unset means the endpoint's own default applies, which is what M2 will tune against.
+    expect(loadConfig(validEnv).llm.reasoningEffort).toBeUndefined();
+    expect(loadConfig({ ...validEnv, LLM_REASONING_EFFORT: "  " }).llm.reasoningEffort)
+      .toBeUndefined();
+  });
+
+  it("takes reasoning effort from the environment when the operator sets one", () => {
+    const config = loadConfig({ ...validEnv, LLM_REASONING_EFFORT: "none" });
+    expect(config.llm.reasoningEffort).toBe("none");
+  });
+
+  it("refuses to boot pointed at a hosted provider", () => {
+    // Invariant 4. A valid URL is not a local URL, and this is the one mistake that would
+    // ship every capture off the operator's network without anything else going wrong.
+    for (const hosted of [
+      "https://api.openai.com/v1",
+      "https://api.anthropic.com/v1",
+      "https://openrouter.ai/api/v1",
+      "http://8.8.8.8:11434/v1",
+    ]) {
+      expect(() => loadConfig({ ...validEnv, LLM_BASE_URL: hosted })).toThrow(
+        /not on your own network/,
+      );
+    }
+  });
+
+  it("boots pointed at anything on the operator's own network", () => {
+    for (const local of [
+      "http://localhost:11434/v1",
+      "http://192.168.1.50:11434/v1",
+      "http://10.0.0.9:8080/v1",
+      "http://[fd7a:115c::1]:11434/v1",
+      "http://ollama:11434/v1",
+      "https://gpu.tail1a2b.ts.net/v1",
+    ]) {
+      expect(loadConfig({ ...validEnv, LLM_BASE_URL: local }).llm.baseUrl).toBe(local);
+    }
+  });
+
   it("rejects an endpoint that is not an absolute http(s) URL", () => {
     // "localhost:11434" without a scheme is the classic version of this mistake, and it
     // parses as a URL with protocol "localhost:" rather than failing outright.
@@ -56,6 +97,33 @@ describe("loadConfig", () => {
     expect(() =>
       loadConfig({ ...validEnv, LLM_BASE_URL: "ftp://example.com" }),
     ).toThrow(/http or https/);
+  });
+
+  it("bounds an extraction generously by default, and takes an override", () => {
+    // The default is a stall detector, not a latency budget: reasoning-on extraction runs
+    // into the minutes on the verified models.
+    expect(loadConfig(validEnv).llm.timeoutMs).toBe(600_000);
+    expect(loadConfig({ ...validEnv, LLM_TIMEOUT_MS: "30000" }).llm.timeoutMs).toBe(30_000);
+  });
+
+  it("falls back to the host's timezone, and takes an override", () => {
+    // Calendar dates the system derives — including the day it tells the model a note was
+    // written — are computed in this zone, not UTC.
+    expect(loadConfig(validEnv).timeZone).toBe(
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    );
+    expect(loadConfig({ ...validEnv, LIFEOPS_TIMEZONE: "America/New_York" }).timeZone).toBe(
+      "America/New_York",
+    );
+  });
+
+  it("rejects a timezone that is not a real IANA zone", () => {
+    // Silently falling back would shift every relative date the model resolves.
+    for (const bad of ["EST5", "Mars/Olympus", "GMT+5"]) {
+      expect(() => loadConfig({ ...validEnv, LIFEOPS_TIMEZONE: bad })).toThrow(
+        /LIFEOPS_TIMEZONE/,
+      );
+    }
   });
 
   it("applies worker defaults when unset", () => {

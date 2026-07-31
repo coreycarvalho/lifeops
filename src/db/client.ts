@@ -21,13 +21,18 @@ export function openDb(path: string) {
   return drizzle(sqlite, { schema });
 }
 
-let cached: Db | undefined;
+let cached: { path: string; db: Db } | undefined;
 
 /**
  * The process-wide connection. Opened lazily on first use — opening at module load would
  * break `next build`, which imports route modules on a machine with no database volume.
+ *
+ * Keyed on the resolved path rather than a bare singleton, so a process that is pointed at
+ * a different database gets that database. In production the path never changes and this is
+ * one comparison; it is what lets a route-handler test run against a temp file.
  */
 export function getDb(): Db {
-  cached ??= openDb(getDbPath());
-  return cached;
+  const path = getDbPath();
+  if (cached?.path !== path) cached = { path, db: openDb(path) };
+  return cached.db;
 }

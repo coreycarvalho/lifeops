@@ -45,6 +45,19 @@ describe("loadConfig", () => {
     expect(config.llm.apiKey).toBeUndefined();
   });
 
+  it("forces no reasoning effort of its own", () => {
+    // Behaviour 13 of issue #5: how hard the model reasons is configuration. Leaving it
+    // unset means the endpoint's own default applies, which is what M2 will tune against.
+    expect(loadConfig(validEnv).llm.reasoningEffort).toBeUndefined();
+    expect(loadConfig({ ...validEnv, LLM_REASONING_EFFORT: "  " }).llm.reasoningEffort)
+      .toBeUndefined();
+  });
+
+  it("takes reasoning effort from the environment when the operator sets one", () => {
+    const config = loadConfig({ ...validEnv, LLM_REASONING_EFFORT: "none" });
+    expect(config.llm.reasoningEffort).toBe("none");
+  });
+
   it("rejects an endpoint that is not an absolute http(s) URL", () => {
     // "localhost:11434" without a scheme is the classic version of this mistake, and it
     // parses as a URL with protocol "localhost:" rather than failing outright.

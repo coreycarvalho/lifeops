@@ -10,18 +10,24 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/db/migrate-cli.ts"
+    "db:migrate": "tsx src/db/migrate-cli.ts",
+    "worker": "tsx src/worker/index.ts",
+    "verify:llm": "tsx src/llm/verify.ts"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.18",
+    "ai": "^7.0.44",
     "better-sqlite3": "^13.0.2",
     "drizzle-orm": "^0.45.2",
     "next": "16.2.12",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "tsx": "^4.23.1"
+    "tsx": "^4.23.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@testing-library/react": "^16.3.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.13.3",
     "@types/react": "^19",
@@ -29,6 +35,7 @@
     "drizzle-kit": "^0.31.10",
     "eslint": "^9",
     "eslint-config-next": "16.2.12",
+    "jsdom": "^29.1.1",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.10"

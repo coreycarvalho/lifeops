@@ -30,6 +30,13 @@ export type Config = {
      * it, so a local setup has no secret at all.
      */
     apiKey?: string;
+    /**
+     * Passed straight through to the endpoint as `reasoning_effort` when set, and omitted
+     * from the request entirely when not. There is deliberately no default: every model
+     * tested extracts worse with reasoning suppressed, and M2 is the first point we have
+     * real captures to tune against. See docs/DECISIONS.md.
+     */
+    reasoningEffort?: string;
   };
   worker: {
     /** How long the worker sleeps when it finds no pending dumps. */
@@ -107,6 +114,7 @@ export function loadConfig(env: Env = process.env): Config {
       baseUrl: requireUrl("LLM_BASE_URL", env),
       model: required("LLM_MODEL", env),
       apiKey: env.LLM_API_KEY?.trim() || undefined,
+      reasoningEffort: env.LLM_REASONING_EFFORT?.trim() || undefined,
     },
     worker: {
       pollIntervalMs: optionalInt("WORKER_POLL_MS", 2000, env),

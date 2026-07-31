@@ -139,3 +139,84 @@ GPU-resident.
 Recorded because the wrong conclusion is the expensive one: it argues for a bigger box or a
 hosted provider, and the second of those would breach invariant 4. Check `ollama ps` before
 believing anything about model size.
+
+## 2026-07-31 — AI SDK v7 + `@ai-sdk/openai-compatible` + zod
+
+The AI SDK was already the committed path; `@ai-sdk/openai-compatible` is its provider for
+exactly this transport, and zod is its peer dependency and the schema `generateObject`
+wants. All three land together because none is useful without the others.
+
+## 2026-07-31 — jsdom component tests arrive in M1, not M2
+
+Supersedes the aside in the Vitest entry above. Two of issue #5's behaviours are the capture
+box's — the summary replacing the confirmation, and "wrong" surviving a reload — and the
+echo is the trust mechanism, so hand-verifying it was the wrong place to save three
+devDependencies. Cost is `jsdom` and `@testing-library/react`; the one jsdom file opts in
+with a `@vitest-environment` docblock so the rest of the suite stays node.
+
+`@testing-library/user-event` was tried and dropped: its internal waits deadlock against
+faked timers, and the polling interval has to be faked to be tested. `fireEvent` needs
+neither and tests the same behaviours.
+
+## 2026-07-31 — Agreed SPEC deviation: the echo is pulled, not pushed, for API captures
+
+SPEC hard requirement 3 says API captures get their echo "pushed via notifier", but
+`Notifier` is M3. M1 ships `GET /api/dumps/:id` instead and M3 adds the push. The web box
+polls the same endpoint, so there is one place the echo is computed rather than two.
+
+## 2026-07-31 — The echo is rendered from the stored records, never written by the model
+
+Asking the model for a summary alongside the records costs nothing and reads better, and is
+exactly wrong: the echo would then describe what the model *meant* to store rather than what
+is in the database, and the trust mechanism becomes one more thing to distrust. It is a pure
+function over the rows that were written, read back after the transaction.
+
+## 2026-07-31 — A failed extraction is `failed` immediately, and retried while attempts remain
+
+"Never silent" and "stops looping" both have to hold. So failure sets `failed` and an error
+message straight away, and the claim query treats `failed` with attempts remaining as
+eligible — the dump is visibly failed the whole time it waits for its next attempt, rather
+than sitting in `pending` looking untouched.
+
+The attempt counter increments at *claim*, not at failure, so a worker that dies
+mid-extraction still spends an attempt and a crash loop still terminates. Anything left
+`processing` is requeued at worker startup, because `processing` is the one status nothing
+retries.
+
+## 2026-07-31 — M1 extracts entities, events, commitments and decisions — no threads
+
+Thread assignment is M2 (issue #5 says so explicitly). The `threads` table stays empty
+through M1. Events carry entity links; decisions do not — `decision_entities` waits for M2,
+because every extra array is another thing a 2B model fills with junk.
+
+## 2026-07-31 — No `pattern` anywhere in the extraction schema
+
+Ollama compiles the JSON Schema into a decoding grammar and cannot compile a regex: any
+`pattern` returns `400 Failed to initialize samplers: failed to parse grammar`. Verified
+against Ollama 0.32.5. Date shapes are therefore checked in `src/extraction/run.ts` when the
+record is written, not by the schema — which is also the better place for them, because one
+hallucinated date should cost one record rather than the whole dump.
+
+## 2026-07-31 — Extraction latency: correcting the 15–70s figure, and a context-length floor
+
+Measured against the real endpoint on the M1 schema, `qwen3.5:2b-q4_K_M`:
+
+| reasoning | result |
+|---|---|
+| default (on), 4096 ctx | no answer — 3829 reasoning tokens, `finish_reason: length` |
+| default (on), 16384 ctx | ~6 min, still consumes essentially the whole context |
+| `none` | ~5s, schema-valid, poor quality (`gemma4:e2b-it-qat`: ~19s) |
+
+So the earlier "15–70 seconds" is wrong for this schema: these models reason until they run
+out of context rather than converging. Ollama also appears to treat `reasoning_effort` as
+on/off — `low` behaved like the default, only `none` changed anything.
+
+Two consequences. First, **`OLLAMA_CONTEXT_LENGTH` must be raised from its 4096 default** or
+reasoning-on extraction cannot produce an answer at all; that is server-side operator
+config, not something LifeOps can set over `/v1` (`options.num_ctx` is ignored there).
+Second, `LLM_REASONING_EFFORT` keeps no default: on this hardware the real choice is minutes
+per dump versus seconds, and neither is obviously right until M2 has real captures to judge
+quality against.
+
+Nothing in the architecture changes — extraction is still in the worker and capture still
+echoes immediately, which is exactly why a six-minute extraction is survivable.

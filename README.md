@@ -40,27 +40,51 @@ one:
 ```bash
 LIFEOPS_DB_PATH=./data/lifeops.db
 LLM_BASE_URL=http://localhost:11434/v1   # ollama serve
-LLM_MODEL=qwen3:4b                       # whatever `ollama list` reports
+LLM_MODEL=qwen3.5:2b-q4_K_M              # whatever `ollama list` reports
 ```
 
 ### Pick the model for the job you're doing
 
 Testing that the pipeline works and judging whether extraction is any good are different
-jobs, and they want different models. Conflating them is how you end up waiting on a model
-your laptop can't hold.
+jobs, and they want different models. Conflating them is how you end up tuning a prompt
+against a model you were never going to deploy.
 
-| Question | Model to use | Why |
+| Question | Model | Why |
 |---|---|---|
-| Does the pipeline work end to end? | smallest thing that runs | Quality is irrelevant. You want fast iteration and real bytes over the wire. |
-| Is the extraction actually good? | what you deploy against | The real question — and it belongs to M2, on the box that runs it. |
+| Does the pipeline work end to end? | `qwen3.5:2b-q4_K_M` (1.9 GB) | Quality is irrelevant here. Smallest thing that loads fast and emits valid JSON. |
+| Is the extraction any good? | whatever your endpoint serves | The real question, and it belongs to M2 — on the box that runs it, not your laptop. |
 
-**Check the model fits before pulling it.** If weights approach your available RAM the
-machine swaps on every token and throughput collapses. Measured on an 8 GB M2: an 8.83 GB
-model ran at **0.1 tok/s — 60 seconds to emit one word.** It is not subtly slow, it is
-unusable, and it looks like a hang rather than an error.
+Anything that speaks OpenAI-compatible works; these are just the tags that have been
+verified. A 2–4B model at Q4 is enough to develop against, and **modest hardware is not the
+constraint people expect** — on an 8 GB Apple-silicon laptop, `qwen3.5:2b-q4_K_M` holds
+1.6 GB resident and runs at ~45 tok/s, and `gemma4:e2b-it-qat` (4.3 GB) holds 3.6 GB at
+~33 tok/s. Both are GPU-accelerated with room to spare.
 
-A 3–4B model at Q4 (~2.5 GB) is the sweet spot for a laptop. `ollama ps` reports resident
-size once loaded; compare that against free memory, not against total memory.
+**Prefer a QAT tag when the model has one.** Quantization-aware-trained builds are
+substantially smaller than the default tag for the same model and quality — `gemma4:e2b-it-qat`
+is 4.3 GB against 7.2 GB for plain `gemma4:e2b`. The default tag is not always the small one.
+
+### Two things that look like bugs and are not
+
+**Extraction taking 15–70 seconds is normal.** Current small models reason before answering,
+and those tokens cost real time. It is not a hang. Extraction runs in the worker and never
+in a request handler, so this costs throughput you are not using — leave reasoning on, since
+every model tested extracts worse without it. `reasoning_effort: "none"` turns it off if you
+need a fast loop; note that `chat_template_kwargs: {enable_thinking: false}` is silently
+ignored over `/v1`.
+
+**A wedged Ollama is indistinguishable from a slow model.** A stuck server accepts the
+connection and returns nothing, which reads exactly like a model too large to load — and
+will burn an afternoon if you take it at face value. Before concluding anything about size:
+
+```bash
+ollama ps                          # is a runner actually resident?
+ps aux | grep "ollama run"         # stale CLI processes block the scheduler
+brew services restart ollama       # or: pkill ollama && ollama serve
+```
+
+If `ollama ps` is empty while a request is in flight, the server is the problem, not the
+model.
 
 ## License
 

@@ -42,7 +42,10 @@ services:
 
   web:
     image: ghcr.io/coreycarvalho/lifeops:${LIFEOPS_IMAGE_TAG:-latest}
-    command: ["npm", "run", "start"]
+    # Direct, for the same reason as the worker below: under `npm run start` a shutdown
+    # signal never reaches Next and in-flight requests are cut rather than drained.
+    command: ["node", "node_modules/.bin/next", "start"]
+    init: true
     env_file: [.env]
     environment:
       LIFEOPS_DB_PATH: /data/lifeops.db
@@ -63,7 +66,15 @@ services:
   worker:
     image: ghcr.io/coreycarvalho/lifeops:${LIFEOPS_IMAGE_TAG:-latest}
     # Extraction is its own process, never a request handler: one dump can take minutes.
-    command: ["npm", "run", "worker"]
+    #
+    # Invoked directly rather than through `npm run worker`, which is not cosmetic: npm runs
+    # the script under `sh -c`, so the node process ends up three levels below PID 1 and the
+    # SIGTERM Docker sends on `compose down` never reaches its handler. The worker would then
+    # be killed mid-extraction with the dump's attempt already spent. Same command as the npm
+    # script, one process instead of four.
+    command: ["node", "--import", "tsx", "src/worker/index.ts"]
+    # Reaps the esbuild helper tsx leaves behind, and forwards signals to node.
+    init: true
     env_file: [.env]
     environment:
       LIFEOPS_DB_PATH: /data/lifeops.db

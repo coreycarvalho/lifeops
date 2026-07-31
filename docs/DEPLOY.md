@@ -117,6 +117,9 @@ docker run --rm -v lifeops_lifeops-data:/data -v "$PWD:/out" \
 docker compose up -d
 ```
 
+Stopping for a backup costs nothing: a dump the worker was mid-way through goes back on the
+queue with its attempts intact and is extracted after the restart.
+
 There is deliberately no built-in backup yet — the strategy is open (issue #1). The one
 constraint that is locked is the one above: one volume, so whatever gets chosen later is a
 copy rather than a migration.
@@ -198,12 +201,25 @@ docker compose up -d` over a bare `up` after an unclean restart, for the same re
 
 ```bash
 docker compose pull
+docker compose down          # not optional — see below
 docker compose up -d
 ```
 
 `init` re-runs on every start: it re-checks the endpoint and applies any new migrations
-before `web` or `worker` come back. Pin `LIFEOPS_IMAGE_TAG=sha-<commit>` if you would rather
-choose your moment.
+before `web` and `worker` come back.
+
+**The `down` matters.** `depends_on` decides what may *start*; it does not stop what is
+already running. A bare `docker compose up -d` after a pull will run the new `init` — and its
+migrations — against a database the old `web` and `worker` are still using, so old code can
+be mid-write against a schema that just changed underneath it. Stopping first means the
+migration has the database to itself, which is the only version of this that is safe to do
+unattended.
+
+Stopping the worker mid-extraction is free: it hands the dump back to the queue without
+spending an attempt, and picks it up again on the way back. If you run the systemd unit,
+`systemctl restart lifeops` already does the right thing.
+
+Pin `LIFEOPS_IMAGE_TAG=sha-<commit>` if you would rather choose your moment.
 
 ## When something is wrong
 

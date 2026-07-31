@@ -10,11 +10,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/db/migrate-cli.ts",
-    "preflight": "tsx src/llm/preflight-cli.ts",
+    "db:migrate": "node --import tsx src/db/migrate-cli.ts",
+    "preflight": "node --import tsx src/llm/preflight-cli.ts",
     "init": "npm run preflight && npm run db:migrate",
-    "worker": "tsx src/worker/index.ts",
-    "verify:llm": "tsx src/llm/verify.ts"
+    "worker": "node --import tsx src/worker/index.ts",
+    "verify:llm": "node --import tsx src/llm/verify.ts"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.18",

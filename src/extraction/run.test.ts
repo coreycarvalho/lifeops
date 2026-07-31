@@ -15,6 +15,7 @@ import {
   claimNextDump,
   EXTRACTION_VERSION,
   extractDump,
+  releaseDump,
   requeueStuckDumps,
   toIsoDate,
 } from "./run";
@@ -474,6 +475,32 @@ describe("deciding what to extract next", () => {
 
     expect(dumpRow(dump.id).extractionAttempts).toBe(maxAttempts);
     expect(claimNextDump(ctx.db, maxAttempts)).toBeUndefined();
+  });
+
+  it("hands a claimed dump back unspent when the worker is asked to stop", () => {
+    // `docker compose down` is the first step of both a documented backup and an upgrade.
+    // It must not be able to spend an attempt, or routine maintenance eventually fails a
+    // capture that was never going to fail on its own.
+    const dump = capture();
+    claimNextDump(ctx.db, 3);
+    expect(dumpRow(dump.id).extractionAttempts).toBe(1);
+
+    expect(releaseDump(ctx.db, dump.id)).toBe(true);
+
+    const row = dumpRow(dump.id);
+    expect(row.extractionStatus).toBe("pending");
+    expect(row.extractionAttempts).toBe(0);
+  });
+
+  it("leaves an extraction that finished in the meantime alone", async () => {
+    // The signal can arrive in the gap between `store()` committing and the loop coming
+    // back around. Undoing a completed extraction there would throw away a good result.
+    const dump = capture();
+    claimNextDump(ctx.db, 3);
+    await extract(stubLlm(() => FURNACE), dump.id);
+
+    expect(releaseDump(ctx.db, dump.id)).toBe(false);
+    expect(dumpRow(dump.id).extractionStatus).toBe("done");
   });
 
   it("marks an out-of-attempts dump failed rather than parking it in pending", () => {

@@ -28,6 +28,7 @@ type Service = {
   ports?: string[];
   extra_hosts?: string[];
   restart?: string;
+  init?: boolean;
   depends_on?: Record<string, { condition: string }>;
 };
 
@@ -67,6 +68,17 @@ describe("compose services", () => {
       expect(services[name].command.join(" ")).not.toMatch(/init|migrate/);
     }
     expect(services.init.restart).toBe("no");
+  });
+
+  it("runs the long-lived processes as PID 1, not under npm", () => {
+    // `npm run x` execs the script under `sh -c`, putting node three levels below PID 1 —
+    // where the SIGTERM from `docker compose down` never reaches its handler. For the
+    // worker that means being killed mid-extraction with the dump's attempt already spent,
+    // which is how routine maintenance ends up failing a good capture.
+    for (const name of ["web", "worker"] as const) {
+      expect(services[name].command[0], name).toBe("node");
+      expect(services[name].init, name).toBe(true);
+    }
   });
 
   it("checks the endpoint before it applies migrations", () => {

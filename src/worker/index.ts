@@ -3,6 +3,7 @@ import { getDb } from "@/db/client";
 import {
   claimNextDump,
   extractDump,
+  releaseDump,
   requeueStuckDumps,
 } from "@/extraction/run";
 import { checkEndpoint } from "@/llm/preflight";
@@ -49,10 +50,25 @@ async function main() {
   );
 
   let running = true;
+  /** The dump currently in flight, if any — what shutdown has to hand back. */
+  let claimed: string | undefined;
+
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
-      console.log(`${signal} — finishing the current dump, then stopping`);
       running = false;
+      // Waiting for the current dump is not an option Docker leaves open: the default stop
+      // grace period is ten seconds and a reasoning-on extraction runs to minutes, so the
+      // wait would end in SIGKILL with the attempt already spent. Give the dump back
+      // instead. Re-extraction is idempotent by design, so abandoning one costs nothing
+      // but the time it had used.
+      if (claimed !== undefined && releaseDump(db, claimed)) {
+        console.log(`${signal} — handing ${claimed} back to the queue, unspent`);
+      } else {
+        console.log(`${signal} — stopping`);
+      }
+      // Safe here and only here: better-sqlite3 is synchronous, so a signal handler never
+      // runs inside a half-finished transaction.
+      process.exit(0);
     });
   }
 
@@ -62,10 +78,12 @@ async function main() {
       await sleep(config.worker.pollIntervalMs);
       continue;
     }
+    claimed = dump.id;
     console.log(`extracting ${dump.id}`);
     // extractDump records its own failures on the dump; anything thrown past it is a bug
     // in the pipeline itself and should stop the worker loudly rather than spin.
     await extractDump(db, provider, dump.id, config.timeZone);
+    claimed = undefined;
   }
 }
 

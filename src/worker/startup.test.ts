@@ -39,9 +39,14 @@ type StubEndpoint = {
   close: () => Promise<void>;
 };
 
-/** An OpenAI-compatible `/models` and nothing else. */
+/**
+ * An OpenAI-compatible `/models`, and — for the shutdown test — a completions endpoint that
+ * accepts the request and then says nothing, which is what a slow model looks like from here.
+ */
 async function stubEndpoint(models: string[]): Promise<StubEndpoint> {
   const requests: string[] = [];
+  const hanging: http.ServerResponse[] = [];
+
   const server = http.createServer((req, res) => {
     requests.push(req.url ?? "");
     if (req.url === "/v1/models") {
@@ -49,7 +54,8 @@ async function stubEndpoint(models: string[]): Promise<StubEndpoint> {
       res.end(JSON.stringify({ object: "list", data: models.map((id) => ({ id })) }));
       return;
     }
-    res.writeHead(404).end();
+    // Never answered. The worker sits in `extractDump` until something stops it.
+    hanging.push(res);
   });
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -59,7 +65,10 @@ async function stubEndpoint(models: string[]): Promise<StubEndpoint> {
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: async () => {
+      for (const res of hanging) res.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
   };
 }
 
@@ -118,6 +127,11 @@ afterEach(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+/** The dump as another process would see it on the shared volume. */
+function row(id: string) {
+  return db.select().from(dumps).where(eq(dumps.id, id)).all()[0];
+}
+
 function env() {
   return {
     LIFEOPS_DB_PATH: dbPath,
@@ -164,5 +178,47 @@ describe("the worker at startup", () => {
 
     expect(endpoint.requests[0]).toBe("/v1/models");
     expect(running.process.exitCode).toBeNull();
+  }, 30_000);
+});
+
+describe("the worker at shutdown", () => {
+  it("hands back the dump it was working on, without spending the attempt", async () => {
+    // `docker compose down` is the first step of both a documented backup and an upgrade,
+    // and Compose kills after ten seconds — well inside a reasoning-on extraction. The
+    // attempt is spent at claim, so without this, routine maintenance eventually marks a
+    // perfectly good capture terminally failed.
+    endpoint = await stubEndpoint([MODEL]);
+    const waiting = createDump(db, { rawText: "a note", source: "web" });
+
+    running = runWorker(env());
+    await waitForOutput(running, `extracting ${waiting.id}`);
+
+    const inFlight = row(waiting.id);
+    expect(inFlight.extractionStatus).toBe("processing");
+    expect(inFlight.extractionAttempts).toBe(1);
+
+    running.process.kill("SIGTERM");
+    const code = await running.exited;
+
+    expect(code).toBe(0);
+    const after = row(waiting.id);
+    expect(after.extractionStatus).toBe("pending");
+    expect(after.extractionAttempts).toBe(0);
+  }, 30_000);
+
+  it("stops promptly rather than waiting out an extraction it cannot finish", async () => {
+    // The old handler promised to finish the current dump, which Compose overrides with
+    // SIGKILL at ten seconds. A promise the platform breaks is worse than no promise.
+    endpoint = await stubEndpoint([MODEL]);
+    createDump(db, { rawText: "a note", source: "web" });
+
+    running = runWorker(env());
+    await waitForOutput(running, "extracting ");
+
+    const started = Date.now();
+    running.process.kill("SIGTERM");
+    await running.exited;
+
+    expect(Date.now() - started).toBeLessThan(5_000);
   }, 30_000);
 });

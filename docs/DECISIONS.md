@@ -449,3 +449,58 @@ The fix is in the boot path rather than the container: DEPLOY.md's systemd unit 
 Considered and rejected: `restart: "no"` on web, which would make every start go through
 Compose but drop crash recovery; and a schema check inside web, which is a real feature and
 belongs to a milestone that has asked for it.
+
+## 2026-07-31 — A graceful stop hands the dump back; it does not spend the attempt
+
+The worker used to promise to "finish the current dump, then stop". Compose's default stop
+grace period is ten seconds and a reasoning-on extraction runs to about six minutes, so the
+promise ended in SIGKILL every time — with the attempt already spent at claim, and
+`requeueStuckDumps` marking the dump terminally `failed` if that was its last one. Since
+`docker compose down` is the documented first step of both a backup and an upgrade, routine
+maintenance could permanently fail a capture that was never going to fail on its own.
+
+So SIGTERM now hands the claimed dump back — `pending`, attempt refunded — and exits
+immediately. Re-extraction is idempotent by design (see the entity-ownership entry), so
+abandoning an in-flight one costs only the time it had used.
+
+This does not weaken the crash bound the claim-time counter exists for: nothing calls
+`releaseDump` on the way out of a crash, so a SIGKILL, an OOM or a panic still spends the
+attempt and a crash loop still terminates. The refund is conditional on the dump still being
+`processing`, so a signal that lands between `store()` committing and the loop coming round
+cannot undo a good result.
+
+Rejected: a `stop_grace_period` long enough to finish an extraction. It would make
+`docker compose down` hang for up to ten minutes during ordinary maintenance, which an
+operator would answer with Ctrl-C — arriving back at SIGKILL, having also made backups
+miserable.
+
+## 2026-07-31 — The upgrade path stops the stack before it migrates
+
+`depends_on` decides what may start; it does not stop what is already running. `docker compose
+pull && docker compose up -d` therefore runs the new `init`, and its migrations, against a
+database the old `web` and `worker` still hold open — old code mid-write against a schema that
+changed underneath it.
+
+The runbook's upgrade is now pull, `down`, `up`. Documentation rather than mechanism because
+the mechanism does not exist in Compose: there is no "stop dependents before running me". The
+same shape as the boot-path fix — `ExecStartPre=-docker compose down` in the systemd unit —
+and for the same reason.
+
+## 2026-07-31 — The long-lived containers run node as PID 1, not `npm run`
+
+`command: ["npm", "run", "worker"]` put the node process three levels below PID 1 — npm, then
+`sh -c`, then the tsx launcher, then node. The SIGTERM Docker sends on `compose down` goes to
+PID 1, and it never reached the handler: verified in a container, where a `compose down`
+during a live extraction left the dump `processing` with its attempt spent, exactly the
+failure the release path above was written to prevent. The unit test passed throughout,
+because vitest spawns the launcher directly and the signal had one hop to make.
+
+So Compose invokes `node --import tsx src/worker/index.ts` and `node node_modules/.bin/next
+start` directly, with `init: true` to reap the esbuild helper tsx leaves behind. The npm
+scripts run the same commands, so dev and production invocation stay identical — Compose just
+does not go through npm to get there.
+
+Recorded because the mechanism is invisible from the code and the obvious test does not see
+it: the process tree only exists in the container, and any future service added with
+`command: ["npm", ...]` reintroduces it silently. `src/packaging.test.ts` now asserts the
+long-lived services start `node`.

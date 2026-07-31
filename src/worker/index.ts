@@ -5,6 +5,7 @@ import {
   extractDump,
   requeueStuckDumps,
 } from "@/extraction/run";
+import { checkEndpoint } from "@/llm/preflight";
 import { createLlmProvider } from "@/llm/provider";
 
 /**
@@ -18,6 +19,19 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main() {
   const config = getConfig();
+
+  // The same gate the `init` container runs, again, on this process's own terms.
+  //
+  // Compose's `depends_on` only orders a `docker compose up`. After a host or daemon
+  // reboot, Docker restarts this container from its restart policy and never re-runs the
+  // exited one-shot, so without this the worker would come back on an endpoint that is
+  // unreachable and spend every dump's attempts finding out — one dump at a time,
+  // permanently failing captures the user was told had landed.
+  //
+  // Failing here instead means the restart policy backs off and retries, dumps stay
+  // `pending`, and extraction resumes on its own when the endpoint does.
+  await checkEndpoint(config.llm);
+
   const db = getDb();
   const provider = createLlmProvider(config.llm);
 

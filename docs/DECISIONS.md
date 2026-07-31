@@ -358,3 +358,60 @@ YAML would rot at the first reformat. `src/packaging.test.ts` parses the real fi
 What it cannot cover is that the image builds and runs, which is `docker buildx build
 --platform linux/amd64,linux/arm64` and `docker compose up`, per issue #6's own note that the
 real-host run is the operator's.
+
+## 2026-07-31 — The capture box binds to loopback, and reaching it is an explicit choice
+
+The short `3000:3000` Compose form binds 0.0.0.0. On any host with a public interface that
+publishes an unauthenticated inbox of everything the operator has ever dumped, as the
+*successful* path — nothing errors, nothing warns. SPEC's "single user behind network-level
+access control" is an assumption the packaging was leaving entirely to the operator's
+firewall.
+
+So `LIFEOPS_BIND` defaults to `127.0.0.1` and the runbook makes naming an interface part of
+setup. The cost is real: an operator who copies `.env.example` unedited cannot reach LifeOps
+from their phone. That failure is loud and takes a minute to fix; the other one is silent and
+does not get noticed. The asymmetry is the whole argument.
+
+## 2026-07-31 — The endpoint gate runs in the worker too, not only in `init`
+
+`depends_on` is a Compose concept. After a host or daemon reboot the daemon restarts `web`
+and `worker` from their restart policies and leaves the exited one-shot alone, so the gate
+that the compose file appears to guarantee simply does not run — and the worker comes back on
+a possibly-unreachable endpoint and spends every waiting dump's attempts discovering it, one
+dump at a time, permanently failing captures the user was told had landed.
+
+The worker now runs `checkEndpoint` before its loop. Failing there means the restart policy
+backs off and retries, dumps stay `pending` rather than `failed`, and extraction resumes on
+its own — strictly better than the old in-flight behaviour, which had the same hole while
+running. `init` stays as it is: it is still what covers migrations and what stops `web` on a
+`compose up`, and DEPLOY.md's systemd unit puts `compose up` back in the boot path.
+
+Not fixable by making `init` restart: a one-shot with a restart policy that survives reboot
+also re-runs forever on success.
+
+## 2026-07-31 — Preflight distinguishes "not yet" from "not right", and matches model ids exactly
+
+Three corrections to the gate, all from the same principle — the message has to name the
+thing that is actually wrong, and the check has to fail where it is cheap:
+
+- **502/503/429 retry; other statuses do not.** A proxy is up before its model upstream is,
+  which is the same "still booting" case as a refused connection. Treating every HTTP answer
+  as permanent left the stack down for an endpoint that recovered inside the grace window,
+  with no restart to notice.
+- **401/403 names `LLM_API_KEY`.** It used to report that `LLM_BASE_URL` was not
+  OpenAI-compatible and suggest fixing the `/v1` path, sending the operator to edit the one
+  variable that was correct.
+- **Model ids match exactly, not case-insensitively.** The id is an opaque string sent back
+  to the endpoint verbatim, so accepting `qwen3:8b` for a listed `Qwen3:8B` passed the check
+  and failed at the first extraction instead — the check's entire purpose, moved later and
+  made harder to read.
+
+## 2026-07-31 — `.env.example` ships UTC, not a real timezone
+
+It shipped `LIFEOPS_TIMEZONE=America/Toronto`. Being *set* suppresses the documented fallback,
+so every operator who edited only the endpoint and the model silently resolved every date in
+someone else's zone — the exact silent-fallback bug the `LIFEOPS_TIMEZONE` entry above exists
+to prevent, reintroduced one layer out in the example file.
+
+UTC is what a container falls back to anyway, so shipping it changes no behaviour; it is not a
+claim about where anyone lives, and it now sits in the block the operator is told to edit.

@@ -18,6 +18,12 @@ services:
   # succeeding, so migrations happen exactly once with nothing racing them, and a
   # misconfigured endpoint means the stack does not come up — rather than a web process
   # cheerfully accepting captures nothing can ever extract.
+  #
+  # This ordering is Compose's, and Compose is only involved in `docker compose up`. After a
+  # host reboot the Docker daemon restarts web and worker from their own restart policies
+  # and leaves this one exited. The worker therefore re-runs the endpoint check itself at
+  # startup, and docs/DEPLOY.md has the systemd unit that puts `compose up` back in the boot
+  # path so migrations are covered too.
   init:
     image: ghcr.io/coreycarvalho/lifeops:${LIFEOPS_IMAGE_TAG:-latest}
     command: ["npm", "run", "init"]
@@ -43,9 +49,12 @@ services:
     volumes:
       - lifeops-data:/data
     ports:
-      # No TLS and no auth by design — single user behind network-level access control.
-      # Bind this to a LAN or VPN address, never to a public one. See docs/DEPLOY.md.
-      - "${LIFEOPS_PORT:-3000}:3000"
+      # Loopback by default, deliberately. LifeOps ships no auth and no TLS, and the short
+      # `3000:3000` form binds 0.0.0.0 — on any host with a public interface that publishes
+      # an unauthenticated inbox of everything the operator has ever dumped. Reaching it
+      # from another device is an explicit choice: set LIFEOPS_BIND to the LAN or VPN
+      # address you want it on. See docs/DEPLOY.md.
+      - "${LIFEOPS_BIND:-127.0.0.1}:${LIFEOPS_PORT:-3000}:3000"
     depends_on:
       init:
         condition: service_completed_successfully

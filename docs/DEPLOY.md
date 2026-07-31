@@ -31,9 +31,13 @@ thinking and never answer. See the README for why.
 ```bash
 curl -O https://raw.githubusercontent.com/coreycarvalho/lifeops/main/docker-compose.yml
 curl -o .env https://raw.githubusercontent.com/coreycarvalho/lifeops/main/.env.example
-$EDITOR .env          # LLM_BASE_URL and LLM_MODEL are the only two that matter
+$EDITOR .env          # four things to set; the file says which
 docker compose up -d
 ```
+
+The four: `LLM_BASE_URL`, `LLM_MODEL`, `LIFEOPS_TIMEZONE` (UTC is the default and is wrong
+for almost everyone — every date the system derives is computed in this zone), and
+`LIFEOPS_BIND`, which is loopback until you say otherwise. See "Who can reach it" below.
 
 Then open `http://<host>:3000`, dump something, and watch the echo go from "Captured.
 Working out what's in it…" to a summary of what was stored. That summary is the point: it is
@@ -63,8 +67,9 @@ copied. The short version:
 | Variable | Required | Notes |
 |---|---|---|
 | `LLM_BASE_URL` | yes | Your endpoint, **including the API path** (`…:11434/v1`). Must be on your own network. |
-| `LLM_MODEL` | yes | Exactly as `ollama list` reports it. |
-| `LIFEOPS_TIMEZONE` | no, but set it | The zone you live in. Defaults to the container's, which is UTC. |
+| `LLM_MODEL` | yes | Exactly as `ollama list` reports it, capitalisation included. |
+| `LIFEOPS_TIMEZONE` | set it | The zone you live in. Defaults to UTC, which is wrong for almost everyone. |
+| `LIFEOPS_BIND` | set it | Which interface the capture box is on. Loopback by default. |
 | `LLM_API_KEY` | no | Only for an endpoint behind a proxy that wants one. Empty is normal. |
 | `LLM_REASONING_EFFORT` | no | Unset = the endpoint's default (better, slower). `none` = fast and worse. |
 | `LLM_TIMEOUT_MS` | no | Abandons a wedged endpoint. Default 10 minutes. |
@@ -116,15 +121,62 @@ copy rather than a migration.
 named volume inherits that ownership from the image while a host directory does not. Run
 `chown -R 1000:1000 /your/path` first, or the stack starts and cannot write.
 
-## Access control
+## Who can reach it
 
 **LifeOps ships no authentication and no TLS, by design.** It is a single-user system and
 the assumption is network-level access control: a LAN, a VPN, or a reverse proxy that
-handles auth. Publish port 3000 to a private interface, never to the internet.
+handles auth.
 
-If you want it reachable from outside the house, put it on a VPN overlay (Tailscale or
-similar) rather than opening a port. That also gives you an endpoint address LifeOps
-accepts for `LLM_BASE_URL`.
+Because of that, the capture box is published on **loopback only** by default. Out of the
+box you can reach it from the host itself and from nowhere else. Opening it up is
+`LIFEOPS_BIND`, and it is deliberately a decision you make rather than one you inherit:
+
+| `LIFEOPS_BIND` | Who can reach it |
+|---|---|
+| `127.0.0.1` (default) | only the host itself — SSH tunnel from your laptop, or a proxy on the same box |
+| `192.168.1.10` | anything on that LAN. The usual answer for a Pi at home |
+| `100.x.x.x` | your tailnet, if you run Tailscale or similar |
+| `0.0.0.0` | every interface on the host. Only if you are certain all of them are private |
+
+**Never `0.0.0.0` on a machine with a public IP.** The short `3000:3000` form that most
+Compose files use does exactly that, which is why this one does not.
+
+If you want it reachable from outside the house, put it on a VPN overlay rather than opening
+a port. That also gives you an address LifeOps accepts for `LLM_BASE_URL`.
+
+## Starting on boot
+
+`docker compose up -d` sets `web` and `worker` to restart automatically, so they come back
+after a reboot. But **Compose's ordering is not part of that**: the Docker daemon restarts
+those two from their own restart policies and never re-runs the exited `init`, so migrations
+would not be applied on a boot that follows an image change.
+
+The worker re-checks the model endpoint on its own startup regardless — it refuses to run
+against an endpoint it cannot reach, rather than burning every waiting dump's attempts
+finding out — so a reboot cannot quietly fail your captures. For migrations, put `compose up`
+back in the boot path:
+
+```ini
+# /etc/systemd/system/lifeops.service
+[Unit]
+Description=LifeOps
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/lifeops
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now lifeops
+```
 
 ## Upgrading
 
@@ -147,6 +199,11 @@ docker compose ps             # if web and worker are missing, init failed — r
 
 **`init` exits 1 and nothing starts.** Read its log; every message names the variable to
 change. It is the gate doing its job.
+
+**The worker keeps restarting.** It checks the endpoint before it will claim a dump, so this
+is the same failure as an `init` that will not pass — read its log for the reason. Dumps
+stay `pending` and are extracted when the endpoint comes back; nothing is lost and no
+attempts are spent.
 
 **Dumps stay "Captured. Working out what's in it…" forever.** The worker is not running or
 is stuck. `docker compose logs worker`. If the model server is wedged it accepts connections

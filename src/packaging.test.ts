@@ -96,6 +96,14 @@ describe("compose services", () => {
     expect(services.init.ports).toBeUndefined();
   });
 
+  it("does not publish the unauthenticated capture box to every interface", () => {
+    // `3000:3000` binds 0.0.0.0. On a host with a public interface that would put an
+    // inbox of everything the operator has ever dumped on the internet, with no auth in
+    // front of it — and it would do it silently, as the successful path.
+    const [published] = services.web.ports ?? [];
+    expect(published).toMatch(/^\$\{LIFEOPS_BIND:-127\.0\.0\.1\}:/);
+  });
+
   it("runs one published image for all three", () => {
     const images = new Set(Object.values(services).map((s) => s.image));
     expect(images.size).toBe(1);
@@ -168,6 +176,18 @@ describe("the documented configuration", () => {
     expect(loadConfig({ ...defaults, ...services.init.environment }).llm.apiKey)
       .toBeUndefined();
     expect(envExample).toMatch(/no secret/i);
+  });
+
+  it("does not quietly put the operator in someone else's timezone", () => {
+    // A shipped `America/Toronto` suppresses the documented fallback and silently resolves
+    // every "tomorrow" for the wrong day, for every operator who edited only the endpoint
+    // and the model. UTC is the fallback stated in config.ts, not a guess about where
+    // anyone lives, so shipping it changes nothing except that it is visible and editable.
+    expect(defaults.LIFEOPS_TIMEZONE).toBe("UTC");
+  });
+
+  it("binds the capture box to loopback until the operator says otherwise", () => {
+    expect(defaults.LIFEOPS_BIND).toBe("127.0.0.1");
   });
 
   it("does not hand a container an endpoint of localhost", () => {

@@ -171,12 +171,76 @@ describe("checkEndpoint", () => {
     expect(error.message).toMatch(/no models/i);
   });
 
-  it("matches the model name as the endpoint reports it, however it reports it", async () => {
+  it("reads the model list whether the endpoint calls it `id` or `name`", async () => {
     // Ollama returns `id`; some servers return `name`. Neither is worth a false failure.
     const byName = vi
       .fn()
-      .mockResolvedValue(Response.json({ data: [{ name: "Qwen3:8B" }] }));
+      .mockResolvedValue(Response.json({ data: [{ name: "qwen3:8b" }] }));
 
-    await expect(checkEndpoint(llm, { fetch: byName })).resolves.toEqual(["Qwen3:8B"]);
+    await expect(checkEndpoint(llm, { fetch: byName })).resolves.toEqual(["qwen3:8b"]);
+  });
+
+  it("holds the model name to the exact string the endpoint reports", async () => {
+    // A model id is an opaque string that goes back to the endpoint verbatim. Accepting a
+    // near-miss here would pass the check and fail at the first extraction instead — the
+    // exact failure this exists to move forward in time.
+    const fetch = vi.fn().mockResolvedValue(serves("Qwen3:8B"));
+
+    const error = await failure(checkEndpoint(llm, { fetch }));
+
+    expect(error.message).toContain("Qwen3:8B");
+    expect(error.message).toContain("LLM_MODEL");
+  });
+});
+
+describe("checkEndpoint against a proxy", () => {
+  it("waits out a gateway whose model upstream is still coming up", async () => {
+    // A reverse proxy accepts the connection long before its upstream can answer, so 502
+    // and 503 are the same "not yet" as a refused connection — and the stack staying down
+    // for an endpoint that recovered inside the grace period would need a human to notice.
+    const sleep = fakeSleep();
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("bad gateway", { status: 502 }))
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValue(serves("qwen3:8b"));
+
+    await expect(checkEndpoint(llm, { fetch, sleep })).resolves.toContain("qwen3:8b");
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(sleep.waits).toHaveLength(2);
+  });
+
+  it("gives up on a gateway that never recovers, and says what it said", async () => {
+    const sleep = fakeSleep();
+    const fetch = vi.fn().mockResolvedValue(new Response("bad gateway", { status: 502 }));
+
+    const error = await failure(checkEndpoint(llm, { fetch, sleep, attempts: 3 }));
+
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(error.message).toContain("502");
+  });
+
+  it("names LLM_API_KEY when the endpoint asks for a credential", async () => {
+    // Reporting this as "LLM_BASE_URL is not OpenAI-compatible, add /v1" sends the operator
+    // to edit the one variable that is correct.
+    for (const status of [401, 403]) {
+      const fetch = vi.fn().mockResolvedValue(new Response("nope", { status }));
+
+      const error = await failure(checkEndpoint(llm, { fetch, sleep: fakeSleep() }));
+
+      expect(error.message).toContain("LLM_API_KEY");
+      expect(error.message).not.toContain("LLM_BASE_URL must");
+      expect(fetch).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("tells an operator with a key that theirs was rejected, not that they need one", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response("nope", { status: 401 }));
+
+    const error = await failure(
+      checkEndpoint({ ...llm, apiKey: "stale-token" }, { fetch }),
+    );
+
+    expect(error.message).toMatch(/expired|not satisfy|did not satisfy/i);
   });
 });

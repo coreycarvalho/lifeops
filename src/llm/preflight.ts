@@ -50,6 +50,15 @@ const TIMEOUT_MS = 5_000;
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Statuses that mean "not yet" rather than "not right": a gateway whose upstream is still
+ * loading a model, or one shedding load. 4xx is the endpoint telling us the request itself
+ * is wrong, which no amount of waiting changes.
+ */
+function isTransient(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
 function isLoopback(baseUrl: string): boolean {
   const host = new URL(baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, "");
   return host === "localhost" || host === "::1" || host.startsWith("127.");
@@ -96,22 +105,38 @@ export async function checkEndpoint(
         signal: AbortSignal.timeout(options.timeoutMs ?? TIMEOUT_MS),
       });
     } catch (error) {
-      // Nothing answered. That can be a box still booting, so it is the one failure worth
-      // waiting on.
+      // Nothing answered. That can be a box still booting, so it is worth waiting on.
       lastError = error;
       if (attempt < attempts) await sleep(options.retryDelayMs ?? RETRY_DELAY_MS);
       continue;
     }
 
-    // Something answered. Everything past this point is a mistake in the configuration
-    // rather than a timing problem, and waiting would only delay saying so.
-    if (!response.ok) throw notCompatible(url, `answered with HTTP ${response.status}`);
+    if (!response.ok) {
+      // A credential problem is about LLM_API_KEY, and saying "your base URL is wrong"
+      // sends the operator to edit the one variable that is fine.
+      if (response.status === 401 || response.status === 403) {
+        throw unauthorized(url, response.status, llm.apiKey !== undefined);
+      }
+      // A proxy that is up before its model upstream answers 502/503, which is the same
+      // "still booting" situation as a refused connection and recovers the same way.
+      // Everything else it says is a configuration mistake that will not fix itself.
+      if (isTransient(response.status)) {
+        lastError = new Error(`HTTP ${response.status} from ${url}`);
+        if (attempt < attempts) await sleep(options.retryDelayMs ?? RETRY_DELAY_MS);
+        continue;
+      }
+      throw notCompatible(url, `answered with HTTP ${response.status}`);
+    }
 
     const body: unknown = await response.json().catch(() => undefined);
     const models = modelNames(body);
     if (!models) throw notCompatible(url, "answered with something that is not a model list");
 
-    if (!models.some((name) => name.toLowerCase() === llm.model.toLowerCase())) {
+    // Exact, not case-insensitive. The model id is an opaque string that gets sent back to
+    // the endpoint verbatim, so accepting "qwen3:8b" for a listed "Qwen3:8B" would pass the
+    // check and then fail at the first extraction — which is the failure this exists to
+    // prevent, moved later and made harder to read.
+    if (!models.includes(llm.model)) {
       throw modelMissing(llm.baseUrl, llm.model, models);
     }
     return models;
@@ -147,6 +172,17 @@ function unreachable(baseUrl: string, attempts: number, cause: unknown): Endpoin
       containerHint +
       `\n\nLifeOps will not start without it: a capture it can never extract is worse than ` +
       `no capture at all.`,
+  );
+}
+
+function unauthorized(url: string, status: number, hasKey: boolean): EndpointError {
+  return new EndpointError(
+    `${url} answered with HTTP ${status}, so it wants a credential LifeOps did not ` +
+      (hasKey
+        ? `satisfy. Check LLM_API_KEY is the one your proxy expects and has not expired.`
+        : `send. Set LLM_API_KEY to the token your proxy expects — a bare Ollama does not ` +
+          `ask for one, so if you did not put a proxy in front of it, LLM_BASE_URL is ` +
+          `pointing at something else.`),
   );
 }
 

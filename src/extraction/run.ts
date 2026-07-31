@@ -167,12 +167,18 @@ export function requeueStuckDumps(
   return { requeued, abandoned };
 }
 
+/**
+ * Every timestamp written here is taken *after* the model returns, never before it is
+ * called. Extraction runs into the minutes, so a clock read at the top of this function
+ * would stamp `extracted_at` — and every extracted record's `created_at` — with the moment
+ * the attempt started, putting the whole model latency between what the row says and what
+ * happened. That is the number M2 will be reading to judge a model.
+ */
 export async function extractDump(
   db: Db,
   provider: LlmProvider,
   dumpId: string,
   timeZone: string,
-  now = new Date(),
 ): Promise<void> {
   const [dump] = db
     .select({ id: dumps.id, rawText: dumps.rawText, createdAt: dumps.createdAt })
@@ -192,14 +198,15 @@ export async function extractDump(
     });
     // Note what is NOT updated: raw_text and created_at. The dump is immutable
     // (invariant 2); extraction only ever adds records and moves status.
-    store(db, dump.id, capturedOn, extraction, now);
+    store(db, dump.id, capturedOn, extraction, new Date());
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     db.update(dumps)
       .set({
         extractionStatus: "failed",
         extractionError: message.slice(0, MAX_ERROR_LENGTH),
-        extractedAt: now.toISOString(),
+        // When it gave up, which for a timeout is ten minutes after it started.
+        extractedAt: new Date().toISOString(),
       })
       .where(eq(dumps.id, dumpId))
       .run();
@@ -211,9 +218,9 @@ function store(
   dumpId: string,
   capturedOn: string,
   extraction: Extraction,
-  now: Date,
+  completedAt: Date,
 ): void {
-  const createdAt = now.toISOString();
+  const createdAt = completedAt.toISOString();
   const dump = { id: dumpId };
 
   db.transaction((tx) => {

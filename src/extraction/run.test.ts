@@ -167,6 +167,42 @@ describe("extracting a dump", () => {
     for (const record of written) expect(record.dumpId).toBe(dump.id);
   });
 
+  it("timestamps the extraction when it finished, not when it started", async () => {
+    // Extraction runs into the minutes. A clock read before the model call would put that
+    // whole latency between what `extracted_at` says and what happened — and M2 reads these
+    // rows to judge a model.
+    const dump = capture();
+    let returnedAt = "";
+    const slow = stubLlm(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      returnedAt = new Date().toISOString();
+      return FURNACE;
+    });
+
+    const startedAt = new Date().toISOString();
+    await extract(slow, dump.id);
+
+    const row = dumpRow(dump.id);
+    expect(row.extractedAt! >= returnedAt).toBe(true);
+    expect(row.extractedAt! > startedAt).toBe(true);
+    // The records it wrote are stamped with the same completion time.
+    expect(rowsFor(dump.id).entities[0].createdAt).toBe(row.extractedAt);
+  });
+
+  it("timestamps a failure when it gave up", async () => {
+    const dump = capture();
+    let failedAt = "";
+    const slow = stubLlm(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      failedAt = new Date().toISOString();
+      throw new Error("endpoint refused the connection");
+    });
+
+    await extract(slow, dump.id);
+
+    expect(dumpRow(dump.id).extractedAt! >= failedAt).toBe(true);
+  });
+
   it("records the extraction version it used", async () => {
     const dump = capture();
     await extract(stubLlm(() => FURNACE), dump.id);

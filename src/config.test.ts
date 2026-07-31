@@ -58,6 +58,34 @@ describe("loadConfig", () => {
     expect(config.llm.reasoningEffort).toBe("none");
   });
 
+  it("refuses to boot pointed at a hosted provider", () => {
+    // Invariant 4. A valid URL is not a local URL, and this is the one mistake that would
+    // ship every capture off the operator's network without anything else going wrong.
+    for (const hosted of [
+      "https://api.openai.com/v1",
+      "https://api.anthropic.com/v1",
+      "https://openrouter.ai/api/v1",
+      "http://8.8.8.8:11434/v1",
+    ]) {
+      expect(() => loadConfig({ ...validEnv, LLM_BASE_URL: hosted })).toThrow(
+        /not on your own network/,
+      );
+    }
+  });
+
+  it("boots pointed at anything on the operator's own network", () => {
+    for (const local of [
+      "http://localhost:11434/v1",
+      "http://192.168.1.50:11434/v1",
+      "http://10.0.0.9:8080/v1",
+      "http://[fd7a:115c::1]:11434/v1",
+      "http://ollama:11434/v1",
+      "https://gpu.tail1a2b.ts.net/v1",
+    ]) {
+      expect(loadConfig({ ...validEnv, LLM_BASE_URL: local }).llm.baseUrl).toBe(local);
+    }
+  });
+
   it("rejects an endpoint that is not an absolute http(s) URL", () => {
     // "localhost:11434" without a scheme is the classic version of this mistake, and it
     // parses as a URL with protocol "localhost:" rather than failing outright.

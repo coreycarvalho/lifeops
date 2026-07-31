@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { echoFor, renderSummary, type SummarySource } from "./echo";
+import { echoFor, renderSummary, willRetry, type SummarySource } from "./echo";
 
 const NOTHING: SummarySource = {
   entities: [],
@@ -104,39 +104,116 @@ describe("the summary line", () => {
 });
 
 describe("the echo a user sees", () => {
+  const MAX = 3;
+
   it("confirms capture before extraction has run", () => {
     // Behaviour 12: the user learns their dump landed now, not sixty seconds from now.
     for (const status of ["pending", "processing"] as const) {
       expect(
-        echoFor({ extractionStatus: status, echo: null, extractionError: null }),
+        echoFor(
+          {
+            extractionStatus: status,
+            extractionAttempts: 0,
+            echo: null,
+            extractionError: null,
+          },
+          MAX,
+        ),
       ).toBe("Captured. Working out what's in it…");
     }
   });
 
   it("shows the summary once extraction is done", () => {
     expect(
-      echoFor({
-        extractionStatus: "done",
-        echo: "Got it: review → Dec 31",
-        extractionError: null,
-      }),
+      echoFor(
+        {
+          extractionStatus: "done",
+          extractionAttempts: 1,
+          echo: "Got it: review → Dec 31",
+          extractionError: null,
+        },
+        MAX,
+      ),
     ).toBe("Got it: review → Dec 31");
   });
 
   it("says extraction failed, and why", () => {
     // Behaviour 6: a failed extraction is never silent.
-    const line = echoFor({
-      extractionStatus: "failed",
-      echo: null,
-      extractionError: "endpoint refused the connection",
-    });
+    const line = echoFor(
+      {
+        extractionStatus: "failed",
+        extractionAttempts: MAX,
+        echo: null,
+        extractionError: "endpoint refused the connection",
+      },
+      MAX,
+    );
     expect(line).toContain("failed");
     expect(line).toContain("endpoint refused the connection");
   });
 
+  it("distinguishes a failure that will be retried from one that is final", () => {
+    // "It broke" and "it broke and that is the end of it" are different things to be told,
+    // and only one of them means the user should go and do something about it.
+    const failed = (extractionAttempts: number) =>
+      echoFor(
+        {
+          extractionStatus: "failed",
+          extractionAttempts,
+          echo: null,
+          extractionError: "endpoint refused the connection",
+        },
+        MAX,
+      );
+
+    expect(failed(1)).toMatch(/trying again/i);
+    expect(failed(MAX)).not.toMatch(/trying again/i);
+    expect(failed(MAX)).toMatch(/failed/i);
+  });
+
   it("still says extraction failed when there is no error text", () => {
     expect(
-      echoFor({ extractionStatus: "failed", echo: null, extractionError: null }),
+      echoFor(
+        {
+          extractionStatus: "failed",
+          extractionAttempts: MAX,
+          echo: null,
+          extractionError: null,
+        },
+        MAX,
+      ),
     ).toMatch(/failed/);
+  });
+});
+
+describe("whether a failure is the end of it", () => {
+  const failed = (extractionAttempts: number) => ({
+    extractionStatus: "failed" as const,
+    extractionAttempts,
+    echo: null,
+    extractionError: "boom",
+  });
+
+  it("is not, while the worker still has attempts left", () => {
+    // Has to agree with `claimNextDump`, or the capture box stops asking about a dump that
+    // is still going to change.
+    expect(willRetry(failed(0), 3)).toBe(true);
+    expect(willRetry(failed(2), 3)).toBe(true);
+  });
+
+  it("is, once the attempts are gone", () => {
+    expect(willRetry(failed(3), 3)).toBe(false);
+    expect(willRetry(failed(4), 3)).toBe(false);
+  });
+
+  it("is never true for a dump that has not failed", () => {
+    for (const extractionStatus of ["pending", "processing", "done"] as const) {
+      expect(
+        willRetry(
+          { extractionStatus, extractionAttempts: 0, echo: null, extractionError: null },
+          3,
+        ),
+      ).toBe(false);
+    }
   });
 });

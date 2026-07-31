@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { desc } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { dumps } from "@/db/schema";
-import { echoFor } from "@/extraction/echo";
+import { echoFor, willRetry } from "@/extraction/echo";
 
 /**
  * Capture: text in, id out. Nothing else.
@@ -55,6 +55,8 @@ export type CaptureEcho = {
   status: "pending" | "processing" | "done" | "failed";
   echo: string;
   flaggedWrong: boolean;
+  /** True while the worker will pick this failure up again — see `willRetry`. */
+  retrying: boolean;
 };
 
 /**
@@ -64,12 +66,17 @@ export type CaptureEcho = {
  * in the page would almost never be seen, and invariant 3 would hold on paper only. This is
  * not the dashboard — no zones, no lens, no curation. That is M4.
  */
-export function listRecentCaptures(db: Db, limit = 10): CaptureEcho[] {
+export function listRecentCaptures(
+  db: Db,
+  maxAttempts: number,
+  limit = 10,
+): CaptureEcho[] {
   return db
     .select({
       id: dumps.id,
       capturedAt: dumps.createdAt,
       extractionStatus: dumps.extractionStatus,
+      extractionAttempts: dumps.extractionAttempts,
       echo: dumps.echo,
       extractionError: dumps.extractionError,
       flaggedWrongAt: dumps.flaggedWrongAt,
@@ -82,7 +89,8 @@ export function listRecentCaptures(db: Db, limit = 10): CaptureEcho[] {
       id: dump.id,
       capturedAt: dump.capturedAt,
       status: dump.extractionStatus,
-      echo: echoFor(dump),
+      echo: echoFor(dump, maxAttempts),
       flaggedWrong: dump.flaggedWrongAt !== null,
+      retrying: willRetry(dump, maxAttempts),
     }));
 }

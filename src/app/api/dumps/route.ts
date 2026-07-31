@@ -1,4 +1,5 @@
 import { createDump, EmptyCaptureError } from "@/capture";
+import { getMaxExtractionAttempts } from "@/config";
 import { getDb } from "@/db/client";
 import { echoFor } from "@/extraction/echo";
 
@@ -30,12 +31,17 @@ export async function POST(request: Request): Promise<Response> {
         id: capture.id,
         capturedAt: capture.createdAt,
         status: capture.extractionStatus,
+        retrying: false,
         // The confirmation the user gets right now. The summary replaces it later.
-        echo: echoFor({
-          extractionStatus: capture.extractionStatus,
-          echo: null,
-          extractionError: null,
-        }),
+        echo: echoFor(
+          {
+            extractionStatus: capture.extractionStatus,
+            extractionAttempts: 0,
+            echo: null,
+            extractionError: null,
+          },
+          getMaxExtractionAttempts(),
+        ),
       },
       { status: 201 },
     );

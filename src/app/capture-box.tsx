@@ -18,8 +18,16 @@ import type { CaptureEcho } from "@/capture";
 /** Long enough not to hammer the endpoint, short enough that the echo feels like it lands. */
 const POLL_MS = 3000;
 
-const settled = (status: CaptureEcho["status"]) =>
-  status === "done" || status === "failed";
+/**
+ * Nothing more is coming for this capture.
+ *
+ * A failure is *not* settled while the worker still has attempts left for it — stopping
+ * there would leave the user staring at an error the very next attempt fixed, until they
+ * happened to reload.
+ */
+const settled = (capture: CaptureEcho) =>
+  capture.status === "done" ||
+  (capture.status === "failed" && !capture.retrying);
 
 export function CaptureBox({ recent }: { recent: CaptureEcho[] }) {
   const [captures, setCaptures] = useState(recent);
@@ -38,7 +46,7 @@ export function CaptureBox({ recent }: { recent: CaptureEcho[] }) {
   }, []);
 
   useEffect(() => {
-    const waiting = captures.filter((capture) => !settled(capture.status));
+    const waiting = captures.filter((capture) => !settled(capture));
     if (waiting.length === 0) return;
 
     const timer = setInterval(() => {

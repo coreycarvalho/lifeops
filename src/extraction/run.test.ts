@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDump } from "@/capture";
 import {
@@ -350,6 +350,21 @@ describe("when the model call fails", () => {
     const row = dumpRow(dump.id);
     expect(row.extractionStatus).toBe("failed");
     expect(row.extractionError).toContain("endpoint refused the connection");
+  });
+
+  it("lets a storage failure escape instead of blaming the model", async () => {
+    // A broken migration or a bug in the echo is not an extraction failure. Dressing it up
+    // as one would mark every dump as the model's fault, burn its attempts, and leave the
+    // worker cheerfully carrying on — no silent exceptions (AGENTS.md).
+    const dump = capture();
+    ctx.db.run(sql`drop table event_entities`);
+    ctx.db.run(sql`drop table events`);
+
+    await expect(extract(stubLlm(() => FURNACE), dump.id)).rejects.toThrow();
+
+    const row = dumpRow(dump.id);
+    expect(row.extractionStatus).not.toBe("failed");
+    expect(row.extractionError).toBeNull();
   });
 
   it("keeps the dump itself intact", async () => {

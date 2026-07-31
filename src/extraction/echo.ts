@@ -103,11 +103,23 @@ export function renderSummary(records: SummarySource, asOf: string): string {
 /** The fields of a dump row the echo depends on. */
 export type EchoSource = {
   extractionStatus: "pending" | "processing" | "done" | "failed";
+  extractionAttempts: number;
   echo: string | null;
   extractionError: string | null;
 };
 
-export function echoFor(dump: EchoSource): string {
+/**
+ * A failed dump the worker will pick up again. It matters to more than the wording: the
+ * capture box has to keep asking for a failure that is still going to change, or the user
+ * is left looking at an error that was fixed on the next attempt.
+ */
+export function willRetry(dump: EchoSource, maxAttempts: number): boolean {
+  return (
+    dump.extractionStatus === "failed" && dump.extractionAttempts < maxAttempts
+  );
+}
+
+export function echoFor(dump: EchoSource, maxAttempts: number): string {
   switch (dump.extractionStatus) {
     case "pending":
     case "processing":
@@ -116,10 +128,13 @@ export function echoFor(dump: EchoSource): string {
       return "Captured. Working out what's in it…";
     case "done":
       return dump.echo ?? "Got it — nothing to file from that one.";
-    case "failed":
-      // Never silent (SPEC M1, issue #5 behaviour 6).
-      return dump.extractionError
-        ? `Captured, but extraction failed: ${dump.extractionError}`
-        : "Captured, but extraction failed.";
+    case "failed": {
+      // Never silent (SPEC M1, issue #5 behaviour 6) — but "failed" and "failed, and that
+      // is the end of it" are different things to be told.
+      const reason = dump.extractionError ? `: ${dump.extractionError}` : ".";
+      return willRetry(dump, maxAttempts)
+        ? `Captured. Extraction failed, trying again${reason}`
+        : `Captured, but extraction failed${reason}`;
+    }
   }
 }

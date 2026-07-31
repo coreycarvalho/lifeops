@@ -64,6 +64,7 @@ const CAPTURED: CaptureEcho = {
   status: "pending",
   echo: "Captured. Working out what's in it…",
   flaggedWrong: false,
+  retrying: false,
 };
 
 const SUMMARISED: CaptureEcho = {
@@ -157,6 +158,53 @@ describe("dumping something in", () => {
     await tick();
 
     expect(screen.getByText(/extraction failed/i)).toBeTruthy();
+  });
+
+  it("keeps asking about a failure the worker will retry", async () => {
+    // The worker retries a failed dump while attempts remain. Treating the first failure as
+    // final would leave the user reading an error that the next attempt fixed, until they
+    // happened to reload — which is the trust mechanism quietly lying to them.
+    const retryable = {
+      ...CAPTURED,
+      status: "failed" as const,
+      echo: "Captured. Extraction failed, trying again: endpoint refused the connection",
+      retrying: true,
+    };
+    stub("POST /api/dumps", CAPTURED, 201);
+    stub("GET /api/dumps/dump-1", retryable);
+    render(<CaptureBox recent={[]} />);
+
+    await dump("furnace quote by friday");
+    await tick();
+    expect(screen.getByText(/trying again/i)).toBeTruthy();
+
+    // The retry succeeds, and the summary arrives without a reload.
+    stub("GET /api/dumps/dump-1", SUMMARISED);
+    await tick();
+
+    expect(screen.getByText(SUMMARISED.echo)).toBeTruthy();
+    expect(screen.queryByText(/trying again/i)).toBeNull();
+  });
+
+  it("stops asking once a failure has run out of attempts", async () => {
+    const terminal = {
+      ...CAPTURED,
+      status: "failed" as const,
+      echo: "Captured, but extraction failed: endpoint refused the connection",
+      retrying: false,
+    };
+    stub("POST /api/dumps", CAPTURED, 201);
+    stub("GET /api/dumps/dump-1", terminal);
+    render(<CaptureBox recent={[]} />);
+
+    await dump("furnace quote by friday");
+    await tick();
+    expect(screen.getByText(terminal.echo)).toBeTruthy();
+
+    const settled = polls();
+    for (let i = 0; i < 10; i++) await tick();
+
+    expect(polls()).toBe(settled);
   });
 
   it("stops asking once the summary has arrived", async () => {

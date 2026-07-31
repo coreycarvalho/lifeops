@@ -51,6 +51,14 @@ LIFEOPS_TIMEZONE=America/Toronto         # optional; defaults to the host's zone
 the day it tells the model a note was written on — is computed in it, so a capture made near
 local midnight resolves "tomorrow" the way you meant it.
 
+**`LLM_BASE_URL` has to be on your own network, and startup refuses if it isn't.** Loopback,
+the private and link-local ranges, the CGNAT range a VPN overlay hands out, and names only a
+local resolver can answer (`.local`, `.internal`, `.lan`, `.home.arpa`, a bare hostname, or a
+Tailscale `*.ts.net` name). Nothing captured leaves your network, so `https://api.openai.com/v1`
+is rejected rather than quietly obeyed — and there is no flag to turn that off. If a legitimate
+endpoint of yours is refused, reach it by its private address or name; widening the policy is a
+code change with a decision-log entry.
+
 Capture is the web app; extraction is a **separate long-running process**, and it never runs
 inside a request handler. Both, plus migrations:
 

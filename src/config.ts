@@ -1,3 +1,4 @@
+import { isOperatorNetworkHost } from "@/llm/endpoint";
 import { isTimeZone, systemTimeZone } from "@/time";
 
 /**
@@ -101,6 +102,27 @@ function requireUrl(name: string, env: Env): string {
   return value;
 }
 
+/**
+ * The LLM endpoint, held to invariant 4: nothing captured leaves the operator's network.
+ *
+ * A valid URL is not enough — `https://api.openai.com/v1` parses fine and would send every
+ * dump to a hosted provider. The host has to be somewhere the operator could own.
+ */
+function requireLocalUrl(name: string, env: Env): string {
+  const value = requireUrl(name, env);
+  const { hostname } = new URL(value);
+  if (!isOperatorNetworkHost(hostname)) {
+    throw new ConfigError(
+      `Environment variable ${name} points at "${hostname}", which is not on your own ` +
+        `network. Nothing captured is allowed to leave it (see invariant 4 in AGENTS.md), ` +
+        `so extraction only talks to loopback, a private or link-local address, or a name ` +
+        `only a local resolver can answer. Reaching a hosted provider is a code change ` +
+        `with a decision-log entry, not a configuration change.`,
+    );
+  }
+  return value;
+}
+
 function optionalInt(
   name: string,
   fallback: number,
@@ -126,6 +148,15 @@ export function getDbPath(env: Env = process.env): string {
   return required("LIFEOPS_DB_PATH", env);
 }
 
+/**
+ * The attempt limit on its own, for the same reason as `getDbPath`: the web process has to
+ * know whether a failed dump is still going to be retried, and asking it for an LLM endpoint
+ * it never calls would be a lie about what it needs to boot.
+ */
+export function getMaxExtractionAttempts(env: Env = process.env): number {
+  return optionalInt("EXTRACTION_MAX_ATTEMPTS", 3, env);
+}
+
 function optionalTimeZone(name: string, env: Env): string {
   const raw = env[name]?.trim();
   if (!raw) return systemTimeZone();
@@ -145,7 +176,7 @@ export function loadConfig(env: Env = process.env): Config {
     llm: {
       // No default: a wrong guess here fails at extraction time, long after startup,
       // and the operator is the only one who knows what their endpoint serves.
-      baseUrl: requireUrl("LLM_BASE_URL", env),
+      baseUrl: requireLocalUrl("LLM_BASE_URL", env),
       model: required("LLM_MODEL", env),
       apiKey: env.LLM_API_KEY?.trim() || undefined,
       reasoningEffort: env.LLM_REASONING_EFFORT?.trim() || undefined,
@@ -155,7 +186,7 @@ export function loadConfig(env: Env = process.env): Config {
     },
     worker: {
       pollIntervalMs: optionalInt("WORKER_POLL_MS", 2000, env),
-      maxExtractionAttempts: optionalInt("EXTRACTION_MAX_ATTEMPTS", 3, env),
+      maxExtractionAttempts: getMaxExtractionAttempts(env),
     },
   };
 }

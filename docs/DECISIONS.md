@@ -258,3 +258,43 @@ for anything that is not `done`, and the button is not rendered.
 The client also rolls the flag back if the request fails. An affordance that shows "marked
 wrong" for something the database never recorded is claiming a persistence it does not have,
 which is worse than not offering it.
+
+## 2026-07-31 — `LLM_BASE_URL` must be on the operator's own network, enforced at startup
+
+Validating that the endpoint is a well-formed http(s) URL does not enforce invariant 4:
+`https://api.openai.com/v1` is a perfectly good URL, and one typo in an env file would ship
+every capture to a hosted provider with nothing else going wrong. The host is now checked
+against loopback, the RFC1918 / link-local / ULA ranges, the CGNAT range that VPN overlays
+hand out, and names only a local resolver can answer (`.local`, `.internal`, `.lan`,
+`.home.arpa`, bare hostnames, and `*.ts.net` for Tailscale MagicDNS).
+
+Syntactic, not a routing proof: a public DNS name pointing at a private address is rejected.
+That is the safe direction to be wrong in, and the fix is to use the private name or address
+directly.
+
+**No override flag, deliberately.** An `LLM_ALLOW_REMOTE=1` would make the invariant
+advisory, which is the opposite of what it is for. Reaching a hosted provider stays what "No
+`LLM_PROVIDER` switch" above says it is: a code change with an entry here.
+
+## 2026-07-31 — Only the model call is caught; storage failures kill the worker
+
+`store()` used to sit inside the same `try` as `provider.extract()`, so a broken migration, a
+missing table or a bug in the echo renderer became an ordinary "extraction failed", burned the
+dump's attempts, and left the worker carrying on doing it to every dump behind it. A pipeline
+bug reported as a model failure is the silent exception AGENTS.md forbids.
+
+The catch now wraps the provider call alone. Anything `store()` throws escapes to the worker's
+fatal handler, which exits non-zero and lets the restart policy surface it. The dump stays
+`processing` and is requeued on the next start, bounded by the attempt limit as usual.
+
+## 2026-07-31 — The echo says whether a failure is going to be retried
+
+`claimNextDump` treats a failed dump as eligible while attempts remain, so "failed" is not a
+terminal state and the capture box must not treat it as one — stopping there leaves the user
+reading an error that the next attempt fixed until they happen to reload. `GET /api/dumps/:id`
+now returns `retrying`, and the echo distinguishes "Extraction failed, trying again" from
+"Captured, but extraction failed".
+
+That means the web process needs the attempt limit, so `getMaxExtractionAttempts` is split out
+the same way `getDbPath` already is: the web app never calls a model, and making it demand an
+LLM endpoint to boot would be a lie about what it needs.

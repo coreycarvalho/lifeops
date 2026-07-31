@@ -191,15 +191,13 @@ export async function extractDump(
   // happens to fall on. Every relative date in the note resolves against this.
   const capturedOn = localDate(dump.createdAt, timeZone);
 
+  let extraction: Extraction;
   try {
-    const extraction = await provider.extract({
-      rawText: dump.rawText,
-      capturedOn,
-    });
-    // Note what is NOT updated: raw_text and created_at. The dump is immutable
-    // (invariant 2); extraction only ever adds records and moves status.
-    store(db, dump.id, capturedOn, extraction, new Date());
+    extraction = await provider.extract({ rawText: dump.rawText, capturedOn });
   } catch (error) {
+    // Only the model call is caught here. A wedged endpoint, a refused connection or a
+    // response that will not validate is an ordinary extraction failure, and retrying it is
+    // the right answer.
     const message = error instanceof Error ? error.message : String(error);
     db.update(dumps)
       .set({
@@ -210,7 +208,17 @@ export async function extractDump(
       })
       .where(eq(dumps.id, dumpId))
       .run();
+    return;
   }
+
+  // Storing is deliberately outside the catch. A broken migration, a missing table or a bug
+  // in the echo is not an extraction failure, and dressing it up as one would mark every
+  // dump as the model's fault while the worker carried on doing it. Let it escape to the
+  // worker's fatal handler instead — no silent exceptions (AGENTS.md).
+  //
+  // Note what is NOT updated: raw_text and created_at. The dump is immutable (invariant 2);
+  // extraction only ever adds records and moves status.
+  store(db, dump.id, capturedOn, extraction, new Date());
 }
 
 function store(

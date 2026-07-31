@@ -1,7 +1,8 @@
 import { eq } from "drizzle-orm";
+import { getMaxExtractionAttempts } from "@/config";
 import { getDb } from "@/db/client";
 import { dumps } from "@/db/schema";
-import { echoFor } from "@/extraction/echo";
+import { echoFor, willRetry } from "@/extraction/echo";
 
 /**
  * The echo, pulled.
@@ -24,6 +25,7 @@ export async function GET(
       id: dumps.id,
       createdAt: dumps.createdAt,
       extractionStatus: dumps.extractionStatus,
+      extractionAttempts: dumps.extractionAttempts,
       echo: dumps.echo,
       extractionError: dumps.extractionError,
       flaggedWrongAt: dumps.flaggedWrongAt,
@@ -34,11 +36,16 @@ export async function GET(
 
   if (!dump) return Response.json({ error: "No such dump" }, { status: 404 });
 
+  const maxAttempts = getMaxExtractionAttempts();
+
   return Response.json({
     id: dump.id,
     capturedAt: dump.createdAt,
     status: dump.extractionStatus,
-    echo: echoFor(dump),
+    echo: echoFor(dump, maxAttempts),
     flaggedWrong: dump.flaggedWrongAt !== null,
+    // A failure is not the end of the story while attempts remain, and the caller has no
+    // way to know that on its own.
+    retrying: willRetry(dump, maxAttempts),
   });
 }

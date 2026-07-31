@@ -7,10 +7,12 @@ triggers (prospective memory — including other people's promises to you), and 
 glanceable dashboard.
 
 > Status: **M1 in progress**, developed 100% by coding agents. Capture, async extraction and
-> the capture echo work end to end; packaging and deployment are next.
+> the capture echo work end to end, and `docker compose up` brings the whole thing up on
+> your own hardware. M1 ends when it is running on a real host.
 
 ## Start here
 
+- [docs/DEPLOY.md](docs/DEPLOY.md) — running it: `docker compose up`, configuration, backups
 - [docs/SPEC.md](docs/SPEC.md) — the product: requirements, data model, dashboard and
   trigger specs, build order
 - [docs/DECISIONS.md](docs/DECISIONS.md) — why the non-obvious choices were made
@@ -22,6 +24,23 @@ your network.** Data at rest stays on your host, and extraction runs against a l
 OpenAI-compatible endpoint you point it at (Ollama is what's verified) — so inference can
 live on a machine with a GPU while LifeOps itself stays small enough for a Pi. No API keys,
 no third-party inference.
+
+## Running it
+
+```bash
+cp .env.example .env
+docker compose up -d
+```
+
+Four things to set in `.env`, and the file says which: your model endpoint
+(`LLM_BASE_URL`) and the model it serves (`LLM_MODEL`), the timezone you live in
+(`LIFEOPS_TIMEZONE` — it defaults to UTC, and every date the system derives is computed in
+it), and which interface the capture box is published on (`LIFEOPS_BIND` — loopback until
+you say otherwise, because LifeOps ships no auth).
+
+Three containers — web, extraction worker, and a one-shot `init` that checks your model
+endpoint and applies migrations before the other two start. One volume holds everything you
+capture, so a backup is a copy of it. [docs/DEPLOY.md](docs/DEPLOY.md) is the runbook.
 
 ## Local development
 

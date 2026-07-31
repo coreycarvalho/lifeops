@@ -19,3 +19,62 @@ jobs:
       - run: npm run typecheck --if-present
       - run: npm test --if-present
       - run: npm run build
+
+  # Lives here rather than in its own workflow so it can depend on the checks above.
+  # `latest` is what a clean host pulls, so publishing a commit that failed lint, typecheck
+  # or tests publishes it straight to the operator — two workflows racing on the same push
+  # cannot express "not unless CI passed".
+  #
+  # Pull requests build both architectures without pushing, so "runs on arm64" is something
+  # CI knows on every change rather than something discovered on the operator's Pi.
+  image:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # arm64 is emulated on GitHub's amd64 runners. better-sqlite3 has a prebuild for it,
+      # so this is mostly copying rather than compiling.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # `latest` for the operator who wants what landed; sha-<commit> for the one who
+          # would rather upgrade deliberately.
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # GHCR creates a package private on first publish, and the documented setup pulls
+      # anonymously — so the first push needs a one-time visibility change in the repo's
+      # package settings or every clean host gets "pull access denied". There is no API for
+      # it; see docs/DEPLOY.md.
+      - name: Remind about package visibility
+        if: github.event_name == 'push'
+        run: |
+          echo "::notice::If this is the first publish, set the package to Public:"
+          echo "::notice::https://github.com/${{ github.repository }}/pkgs/container/${{ github.event.repository.name }}"

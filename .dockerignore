@@ -1,0 +1,27 @@
+# Rebuilt inside the image for the target architecture — a host copy of better-sqlite3's
+# native binding would be the wrong one.
+node_modules
+.next
+out
+build
+
+# The operator's own configuration and state. Neither belongs in a published image.
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-shm
+*.db-wal
+
+.git
+.github
+.claude
+docs
+README.md
+AGENTS.md
+CLAUDE.md
+LICENSE
+*.tsbuildinfo
+npm-debug.log*
+.DS_Store

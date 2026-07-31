@@ -1,0 +1,93 @@
+# LifeOps — web, worker, and a one-shot init, sharing one volume.
+#
+#   cp .env.example .env    # edit it: the endpoint and the model are the only two that matter
+#   docker compose up -d
+#
+# Three services written out rather than sharing a YAML anchor: the differences between them
+# are the design (only init and worker talk to the model; only web publishes a port), and an
+# operator reading this file should not have to resolve merge keys to see that.
+#
+# No model server here. Inference runs on the operator's own network, on hardware that can
+# hold a model — see docs/DEPLOY.md and docs/DECISIONS.md.
+
+name: lifeops
+
+services:
+  # Runs to completion before anything else starts. It checks the LLM endpoint is real and
+  # serves the configured model, then applies migrations. Both other services wait on it
+  # succeeding, so migrations happen exactly once with nothing racing them, and a
+  # misconfigured endpoint means the stack does not come up — rather than a web process
+  # cheerfully accepting captures nothing can ever extract.
+  #
+  # This ordering is Compose's, and Compose is only involved in `docker compose up`. After a
+  # host reboot the Docker daemon restarts web and worker from their own restart policies
+  # and leaves this one exited. The worker therefore re-runs the endpoint check itself at
+  # startup, and docs/DEPLOY.md has the systemd unit that puts `compose up` back in the boot
+  # path so migrations are covered too.
+  init:
+    image: ghcr.io/coreycarvalho/lifeops:${LIFEOPS_IMAGE_TAG:-latest}
+    command: ["npm", "run", "init"]
+    env_file: [.env]
+    environment:
+      # Pinned here, not in .env: where state lives inside the container is a packaging
+      # fact, and this is what keeps "back up one volume" true.
+      LIFEOPS_DB_PATH: /data/lifeops.db
+    volumes:
+      - lifeops-data:/data
+    # Lets LLM_BASE_URL reach a model server running on the Docker host itself, as
+    # http://host.docker.internal:11434/v1. Inside a container, localhost is the container.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: "no"
+
+  web:
+    image: ghcr.io/coreycarvalho/lifeops:${LIFEOPS_IMAGE_TAG:-latest}
+    # Direct, for the same reason as the worker below: under `npm run start` a shutdown
+    # signal never reaches Next and in-flight requests are cut rather than drained.
+    command: ["node", "node_modules/.bin/next", "start"]
+    init: true
+    env_file: [.env]
+    environment:
+      LIFEOPS_DB_PATH: /data/lifeops.db
+    volumes:
+      - lifeops-data:/data
+    ports:
+      # Loopback by default, deliberately. LifeOps ships no auth and no TLS, and the short
+      # `3000:3000` form binds 0.0.0.0 — on any host with a public interface that publishes
+      # an unauthenticated inbox of everything the operator has ever dumped. Reaching it
+      # from another device is an explicit choice: set LIFEOPS_BIND to the LAN or VPN
+      # address you want it on. See docs/DEPLOY.md.
+      - "${LIFEOPS_BIND:-127.0.0.1}:${LIFEOPS_PORT:-3000}:3000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    image: ghcr.io/coreycarvalho/lifeops:${LIFEOPS_IMAGE_TAG:-latest}
+    # Extraction is its own process, never a request handler: one dump can take minutes.
+    #
+    # Invoked directly rather than through `npm run worker`, which is not cosmetic: npm runs
+    # the script under `sh -c`, so the node process ends up three levels below PID 1 and the
+    # SIGTERM Docker sends on `compose down` never reaches its handler. The worker would then
+    # be killed mid-extraction with the dump's attempt already spent. Same command as the npm
+    # script, one process instead of four.
+    command: ["node", "--import", "tsx", "src/worker/index.ts"]
+    # Reaps the esbuild helper tsx leaves behind, and forwards signals to node.
+    init: true
+    env_file: [.env]
+    environment:
+      LIFEOPS_DB_PATH: /data/lifeops.db
+    volumes:
+      - lifeops-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  # The whole of the operator's data: the SQLite file, its WAL sidecars, and from M3 the
+  # config file. Backing LifeOps up is copying this. Issue #1 decides how.
+  lifeops-data:

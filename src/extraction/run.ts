@@ -130,6 +130,33 @@ export function claimNextDump(
 }
 
 /**
+ * Hand a claimed dump back to the queue without spending the attempt.
+ *
+ * The attempt counter exists to bound a worker that keeps crashing, and a graceful shutdown
+ * is not a crash: `docker compose down` is the documented first step of both a backup and an
+ * upgrade, and routine maintenance must not be able to spend the last attempt of a capture
+ * that was never going to fail. Compose's ten-second grace period expires long before a
+ * reasoning-on extraction finishes, so this is the normal path, not an edge case.
+ *
+ * Conditional on `processing`, so an extraction that completed in the moment between the
+ * signal arriving and this running keeps its result. A crash still spends the attempt —
+ * nothing calls this on the way out of a crash.
+ */
+export function releaseDump(db: Db, dumpId: string): boolean {
+  const released = db
+    .update(dumps)
+    .set({
+      extractionStatus: "pending",
+      // Never below zero, so a hand-edited row cannot make the counter meaningless.
+      extractionAttempts: sql`max(${dumps.extractionAttempts} - 1, 0)`,
+    })
+    .where(and(eq(dumps.id, dumpId), eq(dumps.extractionStatus, "processing")))
+    .run();
+
+  return released.changes === 1;
+}
+
+/**
  * Deal with anything left mid-flight. A worker killed between claiming and finishing would
  * otherwise leave a dump `processing` forever, which is the one status nothing retries.
  *

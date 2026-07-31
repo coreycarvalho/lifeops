@@ -298,3 +298,209 @@ now returns `retrying`, and the echo distinguishes "Extraction failed, trying ag
 That means the web process needs the attempt limit, so `getMaxExtractionAttempts` is split out
 the same way `getDbPath` already is: the web app never calls a model, and making it demand an
 LLM endpoint to boot would be a lie about what it needs.
+
+## 2026-07-31 — One image, three commands, and `next start` rather than standalone
+
+The web app, the extraction worker and the `init` step run from the same published image with
+different commands. Next's `output: "standalone"` prunes `node_modules` to what Next traced,
+and the worker and both CLIs run from source through `tsx` — they need `drizzle-orm`,
+`better-sqlite3`, `ai` and `tsx` itself, none of which Next traces. Two images or a standalone
+bundle plus a second `node_modules` would both be more moving parts than a chunky image, and
+issue #6 puts size explicitly out of scope: a Pi-class box can afford a large image more easily
+than a fragile one.
+
+## 2026-07-31 — The base image is Debian trixie, and this is load-bearing
+
+`better-sqlite3`'s prebuilt bindings for linux/amd64 and linux/arm64 are linked against GLIBC
+2.38. `node:24-slim` is bookworm, which ships 2.36: the image builds cleanly, passes every
+test, and then dies on first database call with `libm.so.6: version GLIBC_2.38 not found`.
+Found by running the thing, not by building it.
+
+`node:24-trixie-slim` (GLIBC 2.41) is the fix. The alternative — `npm_config_build_from_source`
+— removes the coupling entirely but pays for it with an emulated arm64 compile of sqlite3.c on
+every lockfile change in CI. Recorded because the failure is invisible at build time and the
+cause is two layers from the symptom; the compilers stay in the build stage as the fallback if
+a future prebuild moves again.
+
+## 2026-07-31 — Startup checks the model endpoint, and a bad one stops the whole stack
+
+`loadConfig` proves `LLM_BASE_URL` is a well-formed URL on the operator's own network, and
+`http://localhost:11434/v1` satisfies both while being wrong inside every container — localhost
+is the container. The web process never reads LLM config at all (deliberately: it never calls a
+model), so nothing would have caught it until the worker's first extraction, by which point
+captures have been accepted for as long as the operator has been using it.
+
+So `init` probes `{LLM_BASE_URL}/models` and checks the endpoint serves `LLM_MODEL` before it
+applies migrations, and `web` and `worker` wait on it succeeding. Connection failures retry for
+about half a minute, because a model box may be booting alongside this one; anything that
+*answered* fails immediately, because a 404 does not fix itself.
+
+Accepted cost: if the model box is down when the host boots, LifeOps stays down rather than
+coming up degraded. That is the trade issue #6 asks for — "startup fails with a clear message
+rather than accepting captures it can never extract" — and a capture the system silently cannot
+extract is a direct hit on invariant 3, which is the whole trust mechanism.
+
+## 2026-07-31 — Compose pins `LIFEOPS_DB_PATH`, overriding the operator's `.env`
+
+Where state lives *inside* the container is a packaging fact, not a preference. An operator who
+could point it somewhere other than the mounted volume could silently make "back up one volume"
+false, and would find out at restore time. `environment:` beats `env_file:`, so `.env` documents
+the variable and says it is ignored under Compose.
+
+## 2026-07-31 — `yaml` (devDependency) so packaging behaviours are tested, not just written
+
+"One volume", "migrations run once with nothing racing them", "web and worker are separate
+processes" and "main publishes both architectures" are behaviours of `docker-compose.yml` and
+the publish workflow. They are as load-bearing as anything in `src/` — a second service given
+its own volume breaks backups and nobody notices until a restore — and hand-rolled regex over
+YAML would rot at the first reformat. `src/packaging.test.ts` parses the real files.
+
+What it cannot cover is that the image builds and runs, which is `docker buildx build
+--platform linux/amd64,linux/arm64` and `docker compose up`, per issue #6's own note that the
+real-host run is the operator's.
+
+## 2026-07-31 — The capture box binds to loopback, and reaching it is an explicit choice
+
+The short `3000:3000` Compose form binds 0.0.0.0. On any host with a public interface that
+publishes an unauthenticated inbox of everything the operator has ever dumped, as the
+*successful* path — nothing errors, nothing warns. SPEC's "single user behind network-level
+access control" is an assumption the packaging was leaving entirely to the operator's
+firewall.
+
+So `LIFEOPS_BIND` defaults to `127.0.0.1` and the runbook makes naming an interface part of
+setup. The cost is real: an operator who copies `.env.example` unedited cannot reach LifeOps
+from their phone. That failure is loud and takes a minute to fix; the other one is silent and
+does not get noticed. The asymmetry is the whole argument.
+
+## 2026-07-31 — The endpoint gate runs in the worker too, not only in `init`
+
+`depends_on` is a Compose concept. After a host or daemon reboot the daemon restarts `web`
+and `worker` from their restart policies and leaves the exited one-shot alone, so the gate
+that the compose file appears to guarantee simply does not run — and the worker comes back on
+a possibly-unreachable endpoint and spends every waiting dump's attempts discovering it, one
+dump at a time, permanently failing captures the user was told had landed.
+
+The worker now runs `checkEndpoint` before its loop. Failing there means the restart policy
+backs off and retries, dumps stay `pending` rather than `failed`, and extraction resumes on
+its own — strictly better than the old in-flight behaviour, which had the same hole while
+running. `init` stays as it is: it is still what covers migrations and what stops `web` on a
+`compose up`, and DEPLOY.md's systemd unit puts `compose up` back in the boot path.
+
+Not fixable by making `init` restart: a one-shot with a restart policy that survives reboot
+also re-runs forever on success.
+
+## 2026-07-31 — Preflight distinguishes "not yet" from "not right", and matches model ids exactly
+
+Three corrections to the gate, all from the same principle — the message has to name the
+thing that is actually wrong, and the check has to fail where it is cheap:
+
+- **502/503/429 retry; other statuses do not.** A proxy is up before its model upstream is,
+  which is the same "still booting" case as a refused connection. Treating every HTTP answer
+  as permanent left the stack down for an endpoint that recovered inside the grace window,
+  with no restart to notice.
+- **401/403 names `LLM_API_KEY`.** It used to report that `LLM_BASE_URL` was not
+  OpenAI-compatible and suggest fixing the `/v1` path, sending the operator to edit the one
+  variable that was correct.
+- **Model ids match exactly, not case-insensitively.** The id is an opaque string sent back
+  to the endpoint verbatim, so accepting `qwen3:8b` for a listed `Qwen3:8B` passed the check
+  and failed at the first extraction instead — the check's entire purpose, moved later and
+  made harder to read.
+
+## 2026-07-31 — `.env.example` ships UTC, not a real timezone
+
+It shipped `LIFEOPS_TIMEZONE=America/Toronto`. Being *set* suppresses the documented fallback,
+so every operator who edited only the endpoint and the model silently resolved every date in
+someone else's zone — the exact silent-fallback bug the `LIFEOPS_TIMEZONE` entry above exists
+to prevent, reintroduced one layer out in the example file.
+
+UTC is what a container falls back to anyway, so shipping it changes no behaviour; it is not a
+claim about where anyone lives, and it now sits in the block the operator is told to edit.
+
+## 2026-07-31 — The image job lives in ci.yml, gated on the checks
+
+It was its own workflow, which meant a push to main raced two independent workflows: one
+running lint, typecheck and tests, the other building and publishing `latest`. A commit that
+failed the tests but still built would be published — and `latest` is what a clean host pulls,
+so that is publishing a broken commit straight to the operator. Two workflows cannot express
+"not unless CI passed"; `needs: ci` in one workflow can.
+
+## 2026-07-31 — GHCR package visibility is a documented manual step
+
+GitHub creates a container package **private** on first publish, and the documented setup
+pulls anonymously, so the first clean host would get `pull access denied` against a SPEC that
+says "public registry". There is no API to change it — it is a one-time toggle in the repo's
+package settings — so the workflow prints the link as a notice on every publish and DEPLOY.md
+lists the symptom under troubleshooting. Recorded because "the image is published" and "the
+image can be pulled" are not the same thing, and only one of them is visible from CI.
+
+## 2026-07-31 — The gate on `web` is the boot unit, not the container
+
+The worker checks the endpoint itself, but `web` cannot: it never calls a model, and making it
+demand an LLM endpoint to boot would be a lie about what it needs (see the `getDbPath` split in
+config.ts). So after an unclean reboot the daemon can have `web` already running when `init`
+executes, and `docker compose up` will not stop a running, up-to-date container to make room
+for the ordering.
+
+The fix is in the boot path rather than the container: DEPLOY.md's systemd unit does
+`ExecStartPre=-docker compose down`, so `up` recreates everything in dependency order and
+`init` genuinely gates `web`. The residual — someone who does not use the unit and runs a bare
+`up` after an unclean restart — is stated in the runbook rather than papered over.
+
+Considered and rejected: `restart: "no"` on web, which would make every start go through
+Compose but drop crash recovery; and a schema check inside web, which is a real feature and
+belongs to a milestone that has asked for it.
+
+## 2026-07-31 — A graceful stop hands the dump back; it does not spend the attempt
+
+The worker used to promise to "finish the current dump, then stop". Compose's default stop
+grace period is ten seconds and a reasoning-on extraction runs to about six minutes, so the
+promise ended in SIGKILL every time — with the attempt already spent at claim, and
+`requeueStuckDumps` marking the dump terminally `failed` if that was its last one. Since
+`docker compose down` is the documented first step of both a backup and an upgrade, routine
+maintenance could permanently fail a capture that was never going to fail on its own.
+
+So SIGTERM now hands the claimed dump back — `pending`, attempt refunded — and exits
+immediately. Re-extraction is idempotent by design (see the entity-ownership entry), so
+abandoning an in-flight one costs only the time it had used.
+
+This does not weaken the crash bound the claim-time counter exists for: nothing calls
+`releaseDump` on the way out of a crash, so a SIGKILL, an OOM or a panic still spends the
+attempt and a crash loop still terminates. The refund is conditional on the dump still being
+`processing`, so a signal that lands between `store()` committing and the loop coming round
+cannot undo a good result.
+
+Rejected: a `stop_grace_period` long enough to finish an extraction. It would make
+`docker compose down` hang for up to ten minutes during ordinary maintenance, which an
+operator would answer with Ctrl-C — arriving back at SIGKILL, having also made backups
+miserable.
+
+## 2026-07-31 — The upgrade path stops the stack before it migrates
+
+`depends_on` decides what may start; it does not stop what is already running. `docker compose
+pull && docker compose up -d` therefore runs the new `init`, and its migrations, against a
+database the old `web` and `worker` still hold open — old code mid-write against a schema that
+changed underneath it.
+
+The runbook's upgrade is now pull, `down`, `up`. Documentation rather than mechanism because
+the mechanism does not exist in Compose: there is no "stop dependents before running me". The
+same shape as the boot-path fix — `ExecStartPre=-docker compose down` in the systemd unit —
+and for the same reason.
+
+## 2026-07-31 — The long-lived containers run node as PID 1, not `npm run`
+
+`command: ["npm", "run", "worker"]` put the node process three levels below PID 1 — npm, then
+`sh -c`, then the tsx launcher, then node. The SIGTERM Docker sends on `compose down` goes to
+PID 1, and it never reached the handler: verified in a container, where a `compose down`
+during a live extraction left the dump `processing` with its attempt spent, exactly the
+failure the release path above was written to prevent. The unit test passed throughout,
+because vitest spawns the launcher directly and the signal had one hop to make.
+
+So Compose invokes `node --import tsx src/worker/index.ts` and `node node_modules/.bin/next
+start` directly, with `init: true` to reap the esbuild helper tsx leaves behind. The npm
+scripts run the same commands, so dev and production invocation stay identical — Compose just
+does not go through npm to get there.
+
+Recorded because the mechanism is invisible from the code and the obvious test does not see
+it: the process tree only exists in the container, and any future service added with
+`command: ["npm", ...]` reintroduces it silently. `src/packaging.test.ts` now asserts the
+long-lived services start `node`.

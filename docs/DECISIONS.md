@@ -109,3 +109,33 @@ With one transport and one code path, a provider enum would be a knob with a sin
 position. Config is `LLM_BASE_URL` + `LLM_MODEL`, plus an optional `LLM_API_KEY` for
 endpoints behind a proxy that wants one. Adding a hosted provider later means adding a
 package and an entry here — deliberately not a config flag.
+
+## 2026-07-30 — Extraction reasons by default; latency is not a design constraint
+
+Current small models emit reasoning tokens before answering, which puts structured
+extraction at 15–70s per dump rather than 1–4s. Every model tested — `qwen3.5:2b`,
+`gemma4:e2b` — extracts measurably worse with reasoning suppressed, fragmenting single
+commitments into several junk records. Since extraction runs in the worker and never in a
+request handler, that time is throughput nobody is waiting on: one operator dumping a dozen
+notes a day spends minutes of idle background compute.
+
+So reasoning is left at each model's default rather than forced off, and `reasoning_effort`
+is exposed as configuration with no value set — M2 tunes it against real captures, which is
+the first point we have evidence about what it should be.
+
+The consequence lands on the capture UI, not the worker: the echo cannot wait on extraction
+without showing a minute of spinner, so capture echoes immediately and extraction fills in
+after. Invariant 3's trust mechanism fires on capture, not on completion.
+
+## 2026-07-30 — Verified local models, and a correction
+
+An earlier revision of the README concluded that an 8 GB machine could not run local
+inference, from a model measured at 0.1 tok/s. That diagnosis was wrong. The Ollama server
+was wedged behind a stale `ollama run` process and was returning empty replies, which is
+indistinguishable from a model too large to load. On a working server the same class of
+hardware runs `qwen3.5:2b-q4_K_M` at ~45 tok/s and `gemma4:e2b-it-qat` at ~33 tok/s, both
+GPU-resident.
+
+Recorded because the wrong conclusion is the expensive one: it argues for a bigger box or a
+hosted provider, and the second of those would breach invariant 4. Check `ollama ps` before
+believing anything about model size.

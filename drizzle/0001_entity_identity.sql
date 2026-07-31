@@ -47,9 +47,12 @@ CREATE TABLE `entity_mentions` (
 CREATE UNIQUE INDEX `entity_mentions_entity_dump_alias_idx` ON `entity_mentions` (`entity_id`,`dump_id`,`alias_normalized`);--> statement-breakpoint
 CREATE INDEX `entity_mentions_alias_idx` ON `entity_mentions` (`alias_normalized`);--> statement-breakpoint
 CREATE INDEX `entity_mentions_dump_idx` ON `entity_mentions` (`dump_id`);--> statement-breakpoint
--- The normalisation mirrors normalizeAlias() in src/extraction/identity.ts: casefold,
--- whitespace to spaces, collapse runs, trim. SQLite has no regex, so the collapse is four
--- nested replaces — enough for a run of sixteen spaces, well past anything a model emits.
+-- `lifeops_normalize_alias` is normalizeAlias() from src/extraction/identity.ts, registered
+-- on the connection by src/db/migrate.ts. It is called rather than reimplemented in SQL
+-- because these values are only ever compared against what that function produces at
+-- runtime, and SQLite's own `lower` is ASCII-only — a translation would leave every alias
+-- with a non-ASCII capital in it unable to match anything, silently. Applying it here means
+-- these migrations are run by `runMigrations`, not by piping the file into `sqlite3`.
 -- A name and an alias that normalise the same are one mention, hence the GROUP BY.
 INSERT INTO `entity_mentions` ("id", "entity_id", "dump_id", "alias", "alias_normalized")
 	SELECT
@@ -68,9 +71,7 @@ INSERT INTO `entity_mentions` ("id", "entity_id", "dump_id", "alias", "alias_nor
 			p."entity_id" AS "entity_id",
 			p."dump_id" AS "dump_id",
 			p."alias" AS "alias",
-			trim(replace(replace(replace(replace(
-				replace(replace(replace(lower(p."alias"), char(9), ' '), char(10), ' '), char(13), ' '),
-			'  ', ' '), '  ', ' '), '  ', ' '), '  ', ' ')) AS "alias_normalized"
+			lifeops_normalize_alias(p."alias") AS "alias_normalized"
 		FROM `__entity_provenance` p
 	)
 	WHERE "alias_normalized" <> ''

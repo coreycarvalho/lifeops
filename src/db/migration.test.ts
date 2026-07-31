@@ -3,9 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createDump } from "@/capture";
 import { openDb, type Db } from "@/db/client";
 import { runMigrations } from "@/db/migrate";
+import { extractDump } from "@/extraction/run";
 import { migrationsThrough } from "@/test/db";
+import { extraction, stubLlm } from "@/test/llm";
 
 /**
  * What an upgrade does to a database that already has captures in it.
@@ -106,19 +109,63 @@ describe("upgrading an M1 database", () => {
   });
 
   it("normalises a legacy alias the way today's matching does", async () => {
-    // The migration's SQL and normalizeAlias() have to agree, or a pre-upgrade alias never
-    // matches anything again — silently.
+    // The backfill and normalizeAlias() have to agree exactly, or a pre-upgrade alias never
+    // matches anything again — silently, and worse the longer the store has been running.
+    //
+    // The cases are the ones a translation of the rule into SQL gets wrong. SQLite's `lower`
+    // is ASCII-only, so it renders ÁLVAREZ as "Álvarez"; a hand-rolled whitespace collapse
+    // covers tab and newline but not the rest of what `\s` matches, so a non-breaking space
+    // survives it. Both produce a value the runtime will never generate.
     seedM1Data();
-    db.run(sql`insert into entity_aliases (id, entity_id, alias)
-               values ('a2', 'e1', '  Mainline   HEATING ')`);
+    const legacy = [
+      ["a2", "  Mainline   HEATING ", "mainline heating"],
+      ["a3", "ÁLVAREZ", "álvarez"],
+      ["a4", "Émilie Dubois", "émilie dubois"],
+    ] as const;
+    for (const [id, alias] of legacy) {
+      db.run(sql`insert into entity_aliases (id, entity_id, alias)
+                 values (${id}, 'e1', ${alias})`);
+    }
 
     runMigrations(db);
 
-    expect(
-      db.all(
-        sql`select alias_normalized as a from entity_mentions where id != '' and alias like '%Mainline%'`,
+    for (const [, alias, normalized] of legacy) {
+      expect(
+        db.all(
+          sql`select alias_normalized as a from entity_mentions where alias = ${alias}`,
+        ),
+      ).toEqual([{ a: normalized }]);
+    }
+  });
+
+  it("lets a backfilled alias dedupe against a fresh extraction", async () => {
+    // The consequence the normalisation exists for, end to end: the entity M1 stored is the
+    // entity the next capture resolves to, rather than a duplicate nothing links.
+    seedM1Data();
+    db.run(sql`insert into entity_aliases (id, entity_id, alias)
+               values ('a2', 'e1', 'ÁLVAREZ')`);
+
+    runMigrations(db);
+
+    const dump = createDump(db, {
+      rawText: "Álvarez called back",
+      source: "web",
+      now: new Date("2026-08-01T09:00:00.000Z"),
+    });
+    await extractDump(
+      db,
+      stubLlm(() =>
+        extraction({
+          entities: [
+            { name: "Álvarez", type: "provider", aliases: [], notes: null },
+          ],
+        }),
       ),
-    ).toEqual([{ a: "mainline heating" }]);
+      dump.id,
+      "America/Toronto",
+    );
+
+    expect(db.all(sql`select id from entities`)).toEqual([{ id: "e1" }]);
   });
 
   it("leaves entities that were stored separately separate", async () => {

@@ -2,6 +2,7 @@ import path from "node:path";
 import { sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import type { Env } from "@/config";
+import { normalizeAlias } from "@/extraction/identity";
 import type { Db } from "./client";
 
 /**
@@ -30,6 +31,19 @@ export function migrationsFolder(env: Env = process.env): string {
  * constraints while the migration ran, so they get checked rather than assumed.
  */
 export function runMigrations(db: Db, folder = migrationsFolder()): void {
+  // 0001 backfills `alias_normalized` for every alias captured before it, and those values
+  // are only ever compared against what `normalizeAlias` produces at runtime. Expressing the
+  // rule a second time in SQL is what makes that comparison quietly wrong: SQLite's `lower`
+  // is ASCII-only, so `ÁLVAREZ` normalises to `Álvarez` there and `álvarez` here, and a
+  // hand-rolled whitespace collapse misses everything `\s` covers beyond tab and newline.
+  // Either way the legacy entity stops matching anything and silently duplicates. So the
+  // migration calls the same function rather than a translation of it.
+  db.$client.function(
+    "lifeops_normalize_alias",
+    { deterministic: true },
+    (value: unknown) => normalizeAlias(String(value ?? "")),
+  );
+
   db.$client.pragma("foreign_keys = OFF");
   try {
     migrate(db, { migrationsFolder: folder });

@@ -551,3 +551,12 @@ afterwards rather than assuming: nothing was enforcing the constraints while the
 ran. `src/db/migration.test.ts` brings a database up to 0000, writes what the M1 release
 would have written, and runs the upgrade for real — the deployed host has real captures in
 it, and a migration that drops them is indistinguishable from the system forgetting.
+
+`runMigrations` also registers `normalizeAlias` as the SQL function
+`lifeops_normalize_alias`, which 0001 calls to backfill `alias_normalized`. Those values are
+only ever compared against what that function produces at runtime, so expressing the rule a
+second time in SQL is what makes the comparison quietly wrong: SQLite's `lower` is
+ASCII-only, so a translation normalises `ÁLVAREZ` to `Álvarez` and the legacy entity stops
+matching anything, silently and permanently. The cost is that migrations must be applied
+through `runMigrations` rather than piped into `sqlite3` — which was already true, and is
+already how both containers run them.

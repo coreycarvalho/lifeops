@@ -504,3 +504,50 @@ Recorded because the mechanism is invisible from the code and the obvious test d
 it: the process tree only exists in the container, and any future service added with
 `command: ["npm", ...]` reintroduces it silently. `src/packaging.test.ts` now asserts the
 long-lived services start `node`.
+
+## 2026-07-31 — Entity identity is separate from entity provenance
+
+Supersedes "Entities are owned by the dump that created them" above, which parked this for
+M2. An entity mentioned by two dumps cannot carry a `dump_id`, so `entities.dump_id` and
+`entity_aliases` both become `entity_mentions` — one row per (dump, entity, alias), meaning
+"this dump referred to this entity by this name". An entity's alias set is the distinct
+union of its mentions.
+
+The two jobs turn out to be one table. It is the provenance link, so every dump that
+mentioned an entity is still traceable from it; it is the index dedupe matches against; and
+because aliases now have provenance, re-extracting a dump forgets the aliases only that dump
+claimed instead of leaving them behind forever. Idempotency moves with it: extraction deletes
+this dump's mentions and then any entity left with none, so an entity another dump still
+refers to keeps its row and its id.
+
+Two entities are the same when their normalised alias sets overlap and their types agree —
+casefold and whitespace-collapse, nothing fuzzy, ties to the oldest row. That answers issue
+#7's open question in the conservative direction, and the asymmetry is the argument: a wrong
+merge is invisible and expensive to undo, a missed one costs a duplicate row and is fixed by
+the next dump that names both ways at once. So an extraction overlapping two existing
+entities attaches to one and leaves the other alone rather than merging them, and a shared
+name across two types (`Maple` the property, `Maple` the company) stays two things.
+
+Accepted cost: a model that types the same person `person` in one dump and `provider` in the
+next produces two entities. Considered and rejected: feeding known entities into the prompt
+and letting the model decide identity — prompt iteration is the other half of M2, and an
+identity rule the model decides is a rule `npm test` cannot exercise without a model running.
+
+SPEC writes `entities.aliases[]`; it is a view over `entity_mentions` for the same reason the
+other collections became junction tables.
+
+## 2026-07-31 — Migrations run with foreign keys off, set on the connection
+
+SQLite cannot drop a column that a foreign key names, so any migration that changes a table's
+shape rebuilds it — copy, drop, rename — and `DROP TABLE` with foreign keys enforced cascades
+and takes every child row with it. The `PRAGMA foreign_keys=OFF` drizzle-kit writes into the
+migration file cannot prevent this: the migrator runs every statement inside one transaction,
+and the pragma is a documented no-op there. Verified before designing around it — the pragma
+still reads 1, and the children go.
+
+So `runMigrations` sets it on the connection, outside the transaction, which is where
+SQLite's own documented ALTER procedure puts it, and runs `pragma foreign_key_check`
+afterwards rather than assuming: nothing was enforcing the constraints while the migration
+ran. `src/db/migration.test.ts` brings a database up to 0000, writes what the M1 release
+would have written, and runs the upgrade for real — the deployed host has real captures in
+it, and a migration that drops them is indistinguishable from the system forgetting.
